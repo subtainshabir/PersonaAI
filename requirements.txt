@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+jinja2
+pymupdf
+python-docx
+python-multipart
+sentence-transformers
+numpy
