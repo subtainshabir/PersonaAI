@@ -372,6 +372,18 @@ body {
   border-bottom-left-radius: 4px;
 }
 
+.message-row.assistant .message-bubble.message-error {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+:root[data-theme="dark"] .message-row.assistant .message-bubble.message-error {
+  background: #3a1c1c;
+  color: #f87171;
+  border-color: #5c2626;
+}
+
 /* ---------- INPUT AREA ---------- */
 .input-area {
   padding: 16px 24px 20px;

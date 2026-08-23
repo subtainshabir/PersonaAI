@@ -22,19 +22,31 @@ async function sendMessage(text) {
   messageInput.value = "";
   resizeInput();
 
+  // Loading state: a placeholder bubble shown until the real answer (or an
+  // error) comes back and replaces its text.
   const typingBubble = addMessage("assistant", "Thinking...");
 
   try {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: message })
+      body: JSON.stringify({ query: message })
     });
 
     const data = await response.json();
-    typingBubble.textContent = data.response;
+
+    if (!response.ok) {
+      // Error state: backend returned a real error (e.g. missing Groq key,
+      // bad request) — show its detail rather than a raw stack trace.
+      typingBubble.textContent = data.detail || "Something went wrong. Please try again.";
+      typingBubble.classList.add("message-error");
+    } else {
+      typingBubble.textContent = data.answer;
+    }
   } catch (error) {
+    // Error state: network failure, server unreachable, etc.
     typingBubble.textContent = "Something went wrong reaching PersonaAI. Please try again.";
+    typingBubble.classList.add("message-error");
   }
 
   messagesContainer.scrollTop = messagesContainer.scrollHeight;

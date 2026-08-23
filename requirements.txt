@@ -6,3 +6,6 @@ python-docx
 python-multipart
 sentence-transformers
 numpy
+faiss-cpu
+groq
+python-dotenv
