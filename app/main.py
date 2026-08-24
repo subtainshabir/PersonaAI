@@ -1,9 +1,9 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
-# Loaded before any service reads os.environ, so GROQ_API_KEY from a local
-# .env file is available by the time the first chat request comes in.
 load_dotenv()
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -21,15 +21,40 @@ from app.services.embedding_service import (
     run_similarity_experiment,
 )
 from app.services.vector_store import (
+    CorruptedStoreError,
     DimensionMismatchError,
     EmptyIndexError,
     create_store,
     get_store,
+    load_store_from_disk,
 )
 from app.services.context_builder import build_context
 from app.services.llm_service import LLMRequestError, MissingAPIKeyError, generate_answer
+from app.services.database import DatabaseError, init_db
+from app.services.conversation_service import (
+    ConversationNotFoundError,
+    InvalidRoleError,
+    add_message,
+    create_conversation,
+    delete_conversation,
+    get_conversation,
+    get_conversations,
+    get_messages,
+    rename_conversation,
+)
 
-app = FastAPI(title="PersonaAI")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    try:
+        load_store_from_disk()
+    except CorruptedStoreError as error:
+        print(f"Warning: saved knowledge base could not be loaded: {error}")
+    yield
+
+
+app = FastAPI(title="PersonaAI", lifespan=lifespan)
 
 # BASE_DIR points to this file's folder (app/), no matter where uvicorn is
 # started from. This keeps "static" and "templates" resolvable either way.
@@ -53,6 +78,19 @@ class SearchRequest(BaseModel):
     top_k: int = 3
 
 
+class ConversationCreateRequest(BaseModel):
+    title: Optional[str] = None
+
+
+class ConversationRenameRequest(BaseModel):
+    title: str
+
+
+class MessageCreateRequest(BaseModel):
+    role: str
+    content: str
+
+
 @app.get("/")
 def read_root(request: Request):
     # Renders templates/index.html and sends it to the browser
@@ -67,24 +105,25 @@ RETRIEVAL_TOP_K = 3
 NO_CONTEXT_MESSAGE = "I don't have that information in my knowledge base."
 
 
-def _retrieve_context(query: str, top_k: int = RETRIEVAL_TOP_K) -> dict:
-    """
-    Shared by /api/chat and /api/search: embeds the query, searches the
-    FAISS store, and assembles context — the exact
-    Question -> Query Embedding -> FAISS Search -> Context pipeline, kept
-    in one place so both endpoints stay consistent.
-    """
-    store = get_store()  # raises EmptyIndexError if nothing is indexed
+class RetrievalError(Exception):
+    pass
 
-    # Same embedding_service, same cached model used for document chunks —
-    # query and chunk vectors must come from the same model to be comparable.
-    query_vector = embed_text(query)
-    results = store.search(query_vector, top_k=top_k)
+
+def _retrieve_context(query: str, top_k: int = RETRIEVAL_TOP_K) -> dict:
+    store = get_store()
+
+    try:
+        query_vector = embed_text(query)
+        results = store.search(query_vector, top_k=top_k)
+    except (EmptyIndexError, DimensionMismatchError):
+        raise
+    except Exception as error:
+        raise RetrievalError(f"Failed to retrieve relevant information: {error}") from error
 
     formatted_results = [
         {
             "chunk_id": result.get("chunk_id"),
-            "source": result.get("source"),
+            "source": result.get("source") or "Unknown source",
             "score": round(result["score"], 4),
             "text": result.get("text"),
         }
@@ -92,6 +131,18 @@ def _retrieve_context(query: str, top_k: int = RETRIEVAL_TOP_K) -> dict:
     ]
 
     return build_context(formatted_results)
+
+
+GREETINGS = {
+    "hi", "hello", "hey", "hiya", "yo",
+    "good morning", "good afternoon", "good evening",
+    "how are you", "how's it going", "whats up", "what's up",
+}
+
+
+def _is_greeting(query: str) -> bool:
+    normalized = query.strip().lower().strip("!.?")
+    return normalized in GREETINGS
 
 
 @app.post("/api/chat")
@@ -102,14 +153,26 @@ def chat(chat_request: ChatRequest):
     if not query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
+    if _is_greeting(query):
+        return {
+            "query": query,
+            "answer": "Hello! I'm PersonaAI. Ask me anything about my professional profile — education, skills, projects, or experience.",
+            "sources": [],
+        }
+
     try:
         context_result = _retrieve_context(query)
     except EmptyIndexError:
-        # No document has been indexed yet — nothing to answer from, and
-        # nothing to send to the LLM.
+        return {"query": query, "answer": NO_CONTEXT_MESSAGE, "sources": []}
+    except CorruptedStoreError:
         return {"query": query, "answer": NO_CONTEXT_MESSAGE, "sources": []}
     except DimensionMismatchError as error:
         raise HTTPException(status_code=400, detail=str(error))
+    except RetrievalError:
+        raise HTTPException(
+            status_code=500,
+            detail="Something went wrong while retrieving relevant information. Please try again.",
+        )
 
     if not context_result["found_relevant_context"]:
         # Retrieval found nothing relevant enough — per spec, we do NOT
@@ -269,8 +332,11 @@ async def index_document_endpoint(file: UploadFile = File(...)):
 
     try:
         store.add(vectors, metadatas)
+        store.save()
     except (ValueError, DimensionMismatchError) as error:
         raise HTTPException(status_code=400, detail=str(error))
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=f"Failed to save knowledge base to disk: {error}")
 
     return {
         "filename": processed["filename"],
@@ -295,8 +361,15 @@ def search_endpoint(search_request: SearchRequest):
         context_result = _retrieve_context(search_request.query, top_k=search_request.top_k)
     except EmptyIndexError as error:
         raise HTTPException(status_code=400, detail=str(error))
+    except CorruptedStoreError as error:
+        raise HTTPException(status_code=500, detail=f"Knowledge base is corrupted: {error}")
     except DimensionMismatchError as error:
         raise HTTPException(status_code=400, detail=str(error))
+    except RetrievalError:
+        raise HTTPException(
+            status_code=500,
+            detail="Something went wrong while retrieving relevant information. Please try again.",
+        )
 
     return {
         "query": search_request.query,
@@ -304,3 +377,74 @@ def search_endpoint(search_request: SearchRequest):
         "context": context_result["context"],
         "found_relevant_context": context_result["found_relevant_context"],
     }
+
+
+@app.post("/api/conversations")
+def create_conversation_endpoint(request: ConversationCreateRequest):
+    try:
+        return create_conversation(request.title)
+    except DatabaseError:
+        raise HTTPException(status_code=500, detail="A database error occurred.")
+
+
+@app.get("/api/conversations")
+def list_conversations_endpoint():
+    try:
+        return get_conversations()
+    except DatabaseError:
+        raise HTTPException(status_code=500, detail="A database error occurred.")
+
+
+@app.get("/api/conversations/{conversation_id}")
+def get_conversation_endpoint(conversation_id: int):
+    try:
+        return get_conversation(conversation_id)
+    except ConversationNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except DatabaseError:
+        raise HTTPException(status_code=500, detail="A database error occurred.")
+
+
+@app.patch("/api/conversations/{conversation_id}")
+def rename_conversation_endpoint(conversation_id: int, request: ConversationRenameRequest):
+    try:
+        return rename_conversation(conversation_id, request.title)
+    except ConversationNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except DatabaseError:
+        raise HTTPException(status_code=500, detail="A database error occurred.")
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation_endpoint(conversation_id: int):
+    try:
+        delete_conversation(conversation_id)
+    except ConversationNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except DatabaseError:
+        raise HTTPException(status_code=500, detail="A database error occurred.")
+    return {"status": "deleted", "id": conversation_id}
+
+
+@app.post("/api/conversations/{conversation_id}/messages")
+def add_message_endpoint(conversation_id: int, request: MessageCreateRequest):
+    try:
+        return add_message(conversation_id, request.role, request.content)
+    except ConversationNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except (InvalidRoleError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except DatabaseError:
+        raise HTTPException(status_code=500, detail="A database error occurred.")
+
+
+@app.get("/api/conversations/{conversation_id}/messages")
+def get_messages_endpoint(conversation_id: int):
+    try:
+        return get_messages(conversation_id)
+    except ConversationNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except DatabaseError:
+        raise HTTPException(status_code=500, detail="A database error occurred.")

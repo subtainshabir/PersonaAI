@@ -1,34 +1,26 @@
-"""
-Vector Store
-------------
-
-Wraps a FAISS index plus the chunk metadata needed to turn a search
-result (a vector position) back into readable text.
-
-    Embeddings -> FAISS Index -> Stored Vectors
-    FAISS position -> metadata mapping -> Chunk text
-
-This module only stores and searches vectors it's handed — it knows
-nothing about files, chunking, or how vectors are produced:
-
-    document_processor.py:  File   -> Extract -> Clean -> Text
-    chunker.py:              Text   -> Chunks
-    embedding_service.py:    Chunks -> Vectors
-    vector_store.py:         Vectors -> Searchable index
-"""
-
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import faiss
 import numpy as np
 
+DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "vector_store"
+INDEX_PATH = DATA_DIR / "index.faiss"
+METADATA_PATH = DATA_DIR / "metadata.json"
+
 
 class DimensionMismatchError(Exception):
-    """Raised when a vector's dimension doesn't match the index's dimension."""
+    pass
 
 
 class EmptyIndexError(Exception):
-    """Raised when searching before any vectors have been added."""
+    pass
+
+
+class CorruptedStoreError(Exception):
+    pass
 
 
 class VectorStore:
@@ -37,18 +29,7 @@ class VectorStore:
             raise ValueError(f"dimension must be a positive integer, got {dimension!r}.")
 
         self.dimension = dimension
-
-        # IndexFlatIP does an exact search using inner product. Our
-        # embeddings are normalized to unit length (see embedding_service),
-        # and for unit-length vectors, inner product IS cosine similarity —
-        # so this index gives us cosine-similarity search without any
-        # extra math on our end.
         self.index = faiss.IndexFlatIP(dimension)
-
-        # FAISS only knows vector positions (0, 1, 2, ...), not what they
-        # mean. This dict is the separate lookup that maps a position back
-        # to the chunk it came from — kept outside FAISS on purpose, so the
-        # two responsibilities (search vs. meaning) stay distinct.
         self.metadata: dict[int, dict] = {}
 
     def add(self, vectors: list[list[float]], metadatas: list[dict]) -> None:
@@ -67,8 +48,6 @@ class VectorStore:
                 f"Expected vectors of dimension {self.dimension}, got {actual}."
             )
 
-        # New vectors are appended after whatever's already in the index,
-        # so position numbers stay unique as more documents get indexed.
         start_position = self.index.ntotal
         self.index.add(matrix)
 
@@ -86,14 +65,13 @@ class VectorStore:
                 f"Expected a query vector of dimension {self.dimension}, got {actual}."
             )
 
-        # Can't ask FAISS for more results than vectors it actually holds.
         k = min(top_k, self.index.ntotal)
         scores, positions = self.index.search(query, k)
 
         results = []
         for score, position in zip(scores[0], positions[0]):
             if position == -1:
-                continue  # FAISS pads with -1 when there are fewer than k matches.
+                continue
             meta = self.metadata.get(int(position), {})
             results.append({"score": float(score), **meta})
 
@@ -103,12 +81,43 @@ class VectorStore:
     def total_vectors(self) -> int:
         return self.index.ntotal
 
+    def save(self, index_path: Path = INDEX_PATH, metadata_path: Path = METADATA_PATH) -> None:
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        faiss.write_index(self.index, str(index_path))
+        payload = {
+            "dimension": self.dimension,
+            "metadata": {str(position): meta for position, meta in self.metadata.items()},
+        }
+        metadata_path.write_text(json.dumps(payload))
 
-# ---------- MODULE-LEVEL STORE ----------
-# PersonaAI has no database yet, so for this dev/testing phase we keep one
-# "current" index in memory for as long as the server process runs.
-# Indexing a new document replaces it — this is intentionally simple until
-# persistent storage is introduced in a later phase.
+    @classmethod
+    def load(cls, index_path: Path = INDEX_PATH, metadata_path: Path = METADATA_PATH) -> "VectorStore":
+        if not index_path.exists() or not metadata_path.exists():
+            raise EmptyIndexError("No saved knowledge base found on disk.")
+
+        try:
+            index = faiss.read_index(str(index_path))
+            payload = json.loads(metadata_path.read_text())
+            metadata_raw = payload["metadata"]
+            dimension = payload["dimension"]
+        except Exception as error:
+            raise CorruptedStoreError(f"Saved knowledge base is unreadable: {error}") from error
+
+        if index.d != dimension:
+            raise CorruptedStoreError(
+                f"Saved index dimension ({index.d}) does not match stored metadata dimension ({dimension})."
+            )
+        if index.ntotal != len(metadata_raw):
+            raise CorruptedStoreError(
+                f"Saved index has {index.ntotal} vectors but metadata has {len(metadata_raw)} entries."
+            )
+
+        store = cls(dimension)
+        store.index = index
+        store.metadata = {int(position): meta for position, meta in metadata_raw.items()}
+        return store
+
+
 _current_store: VectorStore | None = None
 
 
@@ -122,3 +131,11 @@ def get_store() -> VectorStore:
     if _current_store is None:
         raise EmptyIndexError("No document has been indexed yet. Call /api/documents/index first.")
     return _current_store
+
+
+def load_store_from_disk() -> None:
+    global _current_store
+    try:
+        _current_store = VectorStore.load()
+    except EmptyIndexError:
+        pass

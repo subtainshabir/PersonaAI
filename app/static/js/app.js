@@ -9,6 +9,9 @@ const sidebarToggle = document.getElementById("sidebarToggle");
 const sidebar = document.getElementById("sidebar");
 const sidebarOverlay = document.getElementById("sidebarOverlay");
 const suggestionCards = document.querySelectorAll(".suggestion-card");
+const conversationsList = document.getElementById("conversationsList");
+
+let currentConversationId = null;
 
 // ---------- SENDING A MESSAGE ----------
 async function sendMessage(text) {
@@ -18,7 +21,23 @@ async function sendMessage(text) {
   // First real message hides the welcome screen
   welcomeScreen.style.display = "none";
 
+  if (currentConversationId === null) {
+    try {
+      const response = await fetch("/api/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      const data = await response.json();
+      currentConversationId = data.id;
+      loadConversations();
+    } catch (error) {
+      // Chat still works without persistence if this fails.
+    }
+  }
+
   addMessage("user", message);
+  persistMessage("user", message);
   messageInput.value = "";
   resizeInput();
 
@@ -36,20 +55,50 @@ async function sendMessage(text) {
     const data = await response.json();
 
     if (!response.ok) {
-      // Error state: backend returned a real error (e.g. missing Groq key,
-      // bad request) — show its detail rather than a raw stack trace.
       typingBubble.textContent = data.detail || "Something went wrong. Please try again.";
       typingBubble.classList.add("message-error");
     } else {
       typingBubble.textContent = data.answer;
+      if (data.sources && data.sources.length > 0) {
+        typingBubble.appendChild(buildSourcesElement(data.sources));
+      }
+      persistMessage("assistant", data.answer);
+      loadConversations();
     }
   } catch (error) {
-    // Error state: network failure, server unreachable, etc.
     typingBubble.textContent = "Something went wrong reaching PersonaAI. Please try again.";
     typingBubble.classList.add("message-error");
   }
 
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function persistMessage(role, content) {
+  if (currentConversationId === null) return;
+  fetch(`/api/conversations/${currentConversationId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role, content })
+  }).catch(() => {});
+}
+
+function buildSourcesElement(sources) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "message-sources";
+
+  const label = document.createElement("div");
+  label.className = "message-sources-label";
+  label.textContent = "Sources:";
+  wrapper.appendChild(label);
+
+  sources.forEach((source) => {
+    const item = document.createElement("div");
+    item.className = "message-source-item";
+    item.textContent = `📄 ${source.source} — Chunk ${source.chunk_id} — Similarity: ${source.score}`;
+    wrapper.appendChild(item);
+  });
+
+  return wrapper;
 }
 
 // Adds a message bubble to the chat and returns the bubble element
@@ -104,11 +153,13 @@ suggestionCards.forEach((card) => {
 
 // ---------- NEW CHAT ----------
 newChatBtn.addEventListener("click", () => {
+  currentConversationId = null;
   messagesContainer.innerHTML = "";
   welcomeScreen.style.display = "block";
   messageInput.value = "";
   resizeInput();
   messageInput.focus();
+  highlightActiveConversation();
 });
 
 // ---------- DARK / LIGHT MODE ----------
@@ -173,11 +224,13 @@ knowledgeProcessBtn.addEventListener("click", async () => {
   formData.append("file", file);
 
   knowledgeProcessBtn.disabled = true;
-  knowledgeProcessBtn.textContent = "Processing...";
+  knowledgeProcessBtn.textContent = "Indexing...";
 
   try {
-    // Phase 4: this endpoint extracts, cleans, chunks, AND embeds the document.
-    const response = await fetch("/api/documents/embed", {
+    // Phase 5: this endpoint extracts, cleans, chunks, embeds, AND adds
+    // the vectors to FAISS — this is what makes the chat box able to
+    // answer questions about the uploaded document.
+    const response = await fetch("/api/documents/index", {
       method: "POST",
       body: formData
     });
@@ -185,7 +238,7 @@ knowledgeProcessBtn.addEventListener("click", async () => {
     const data = await response.json();
 
     if (!response.ok) {
-      showKnowledgeError(data.detail || "Could not process this file.");
+      showKnowledgeError(data.detail || "Could not index this file.");
     } else {
       showKnowledgeSuccess(data);
     }
@@ -200,42 +253,12 @@ knowledgeProcessBtn.addEventListener("click", async () => {
 function showKnowledgeSuccess(data) {
   knowledgeResult.innerHTML = `
     <div class="knowledge-result-row"><strong>Document:</strong> ${escapeHtml(data.filename)}</div>
-    <div class="knowledge-result-row"><strong>Chunks:</strong> ${data.total_chunks}</div>
-    <div class="knowledge-result-row"><strong>Embedding Model:</strong> ${escapeHtml(data.embedding_model)}</div>
+    <div class="knowledge-result-row"><strong>Chunks Indexed:</strong> ${data.total_chunks}</div>
     <div class="knowledge-result-row"><strong>Vector Dimension:</strong> ${data.embedding_dimension}</div>
-    <div class="chunks-heading">Chunk Details</div>
-    <div id="chunkCardsContainer"></div>
+    <div class="knowledge-result-row"><strong>Index Type:</strong> ${escapeHtml(data.index_type)}</div>
+    <div class="knowledge-result-row"><strong>Status:</strong> ${escapeHtml(data.status)}</div>
+    <div class="knowledge-ready-note">You can now ask questions about this document in the chat.</div>
   `;
-
-  const chunkCardsContainer = knowledgeResult.querySelector("#chunkCardsContainer");
-  data.chunks.forEach((chunk) => {
-    const card = document.createElement("div");
-    card.className = "chunk-card";
-
-    const header = document.createElement("div");
-    header.className = "chunk-card-header";
-    header.innerHTML = `<span>Chunk ${chunk.chunk_id + 1}</span><span class="chunk-card-chars">${chunk.characters} characters</span>`;
-
-    const body = document.createElement("div");
-    body.className = "chunk-card-text";
-    body.textContent = chunk.text;
-
-    const vectorLabel = document.createElement("div");
-    vectorLabel.className = "chunk-vector-label";
-    vectorLabel.textContent = "Vector preview:";
-
-    const vectorPreview = document.createElement("div");
-    vectorPreview.className = "chunk-vector-preview";
-    const previewText = "[" + chunk.embedding_preview.map((n) => n.toFixed(4)).join(", ") + ", ...]";
-    vectorPreview.textContent = previewText;
-
-    card.appendChild(header);
-    card.appendChild(body);
-    card.appendChild(vectorLabel);
-    card.appendChild(vectorPreview);
-    chunkCardsContainer.appendChild(card);
-  });
-
   knowledgeResult.classList.add("visible");
 }
 
@@ -250,3 +273,125 @@ function escapeHtml(text) {
   div.textContent = text;
   return div.innerHTML;
 }
+
+// ---------- CONVERSATION LIST (Phase 12) ----------
+async function loadConversations() {
+  try {
+    const response = await fetch("/api/conversations");
+    const conversations = await response.json();
+    renderConversations(conversations);
+  } catch (error) {
+    // Sidebar list is a convenience — chat still works without it.
+  }
+}
+
+function renderConversations(conversations) {
+  if (!conversations || conversations.length === 0) {
+    conversationsList.className = "conversations-empty";
+    conversationsList.textContent = "Your conversations will appear here.";
+    return;
+  }
+
+  conversationsList.className = "conversations-populated";
+  conversationsList.innerHTML = "";
+
+  conversations.forEach((conversation) => {
+    const item = document.createElement("div");
+    item.className = "conversation-item";
+    item.dataset.id = conversation.id;
+    if (conversation.id === currentConversationId) {
+      item.classList.add("active");
+    }
+
+    const title = document.createElement("div");
+    title.className = "conversation-item-title";
+    title.textContent = conversation.title;
+
+    const actions = document.createElement("div");
+    actions.className = "conversation-item-actions";
+    actions.innerHTML = `
+      <button class="conversation-item-btn" data-action="rename" aria-label="Rename"><i class="bi bi-pencil"></i></button>
+      <button class="conversation-item-btn" data-action="delete" aria-label="Delete"><i class="bi bi-trash"></i></button>
+    `;
+
+    item.appendChild(title);
+    item.appendChild(actions);
+    conversationsList.appendChild(item);
+  });
+}
+
+function highlightActiveConversation() {
+  document.querySelectorAll(".conversation-item").forEach((item) => {
+    item.classList.toggle("active", Number(item.dataset.id) === currentConversationId);
+  });
+}
+
+conversationsList.addEventListener("click", async (event) => {
+  const actionBtn = event.target.closest(".conversation-item-btn");
+  const item = event.target.closest(".conversation-item");
+  if (!item) return;
+  const conversationId = Number(item.dataset.id);
+
+  if (actionBtn) {
+    event.stopPropagation();
+    const action = actionBtn.dataset.action;
+    if (action === "rename") await renameConversationPrompt(conversationId, item);
+    if (action === "delete") await deleteConversationConfirm(conversationId);
+    return;
+  }
+
+  await openConversation(conversationId);
+});
+
+async function openConversation(conversationId) {
+  try {
+    const response = await fetch(`/api/conversations/${conversationId}/messages`);
+    if (!response.ok) return;
+    const messages = await response.json();
+
+    currentConversationId = conversationId;
+    messagesContainer.innerHTML = "";
+    welcomeScreen.style.display = messages.length === 0 ? "block" : "none";
+
+    messages.forEach((message) => {
+      addMessage(message.role, message.content);
+    });
+
+    highlightActiveConversation();
+  } catch (error) {
+    // Leave current view unchanged if loading fails.
+  }
+}
+
+async function renameConversationPrompt(conversationId, item) {
+  const currentTitle = item.querySelector(".conversation-item-title").textContent;
+  const newTitle = window.prompt("Rename conversation", currentTitle);
+  if (!newTitle || !newTitle.trim() || newTitle.trim() === currentTitle) return;
+
+  try {
+    await fetch(`/api/conversations/${conversationId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: newTitle.trim() })
+    });
+    loadConversations();
+  } catch (error) {
+    // No-op — list will simply show the old title on next load.
+  }
+}
+
+async function deleteConversationConfirm(conversationId) {
+  if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
+
+  try {
+    await fetch(`/api/conversations/${conversationId}`, { method: "DELETE" });
+    if (conversationId === currentConversationId) {
+      newChatBtn.click();
+    }
+    loadConversations();
+  } catch (error) {
+    // No-op — deleted item will simply remain visible until next load.
+  }
+}
+
+loadConversations();
