@@ -13,6 +13,16 @@ const conversationsList = document.getElementById("conversationsList");
 
 let currentConversationId = null;
 
+function extractErrorMessage(data) {
+  if (!data) return "Something went wrong. Please try again.";
+  if (typeof data.detail === "string") return data.detail;
+  if (Array.isArray(data.detail) && data.detail.length > 0) {
+    const first = data.detail[0];
+    return (first && first.msg) || "Something went wrong. Please try again.";
+  }
+  return "Something went wrong. Please try again.";
+}
+
 // ---------- SENDING A MESSAGE ----------
 async function sendMessage(text) {
   const message = text.trim();
@@ -29,15 +39,22 @@ async function sendMessage(text) {
         body: JSON.stringify({})
       });
       const data = await response.json();
+      if (!response.ok || typeof data.id !== "number") {
+        throw new Error("Conversation creation did not return a valid id.");
+      }
       currentConversationId = data.id;
       loadConversations();
     } catch (error) {
-      // Chat still works without persistence if this fails.
+      // Without a conversation id /api/chat will reject the request —
+      // surface that clearly rather than silently failing later.
+      addMessage("user", message);
+      const errorBubble = addMessage("assistant", "Couldn't start a new conversation. Please try again.");
+      errorBubble.classList.add("message-error");
+      return;
     }
   }
 
   addMessage("user", message);
-  persistMessage("user", message);
   messageInput.value = "";
   resizeInput();
 
@@ -49,20 +66,21 @@ async function sendMessage(text) {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: message })
+      body: JSON.stringify({ query: message, conversation_id: currentConversationId })
     });
 
     const data = await response.json();
 
     if (!response.ok) {
-      typingBubble.textContent = data.detail || "Something went wrong. Please try again.";
+      typingBubble.textContent = extractErrorMessage(data);
       typingBubble.classList.add("message-error");
     } else {
       typingBubble.textContent = data.answer;
       if (data.sources && data.sources.length > 0) {
         typingBubble.appendChild(buildSourcesElement(data.sources));
       }
-      persistMessage("assistant", data.answer);
+      // The backend already saved both the user message and this answer
+      // to the conversation — just refresh the sidebar ordering/title.
       loadConversations();
     }
   } catch (error) {
@@ -71,15 +89,6 @@ async function sendMessage(text) {
   }
 
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
-}
-
-function persistMessage(role, content) {
-  if (currentConversationId === null) return;
-  fetch(`/api/conversations/${currentConversationId}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ role, content })
-  }).catch(() => {});
 }
 
 function buildSourcesElement(sources) {

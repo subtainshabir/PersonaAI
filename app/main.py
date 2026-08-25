@@ -40,6 +40,7 @@ from app.services.conversation_service import (
     get_conversation,
     get_conversations,
     get_messages,
+    get_recent_messages,
     rename_conversation,
 )
 
@@ -71,6 +72,7 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 # FastAPI will automatically reject requests that don't match this shape.
 class ChatRequest(BaseModel):
     query: str
+    conversation_id: int
 
 
 class SearchRequest(BaseModel):
@@ -98,6 +100,7 @@ def read_root(request: Request):
 
 
 RETRIEVAL_TOP_K = 3
+CONVERSATION_HISTORY_LIMIT = 6
 
 # Returned whenever retrieval doesn't find sufficiently relevant context —
 # the LLM is never asked to guess, so this exact message only ever comes
@@ -147,53 +150,68 @@ def _is_greeting(query: str) -> bool:
 
 @app.post("/api/chat")
 def chat(chat_request: ChatRequest):
-    # Flow: Question -> Query Embedding -> FAISS Search -> Context -> Groq -> Answer
+    # Flow: Question -> Retrieval -> History -> Combined Prompt -> Groq -> Answer -> Save
     query = chat_request.query
+    conversation_id = chat_request.conversation_id
 
     if not query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
+    try:
+        get_conversation(conversation_id)
+    except ConversationNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except DatabaseError:
+        raise HTTPException(status_code=500, detail="A database error occurred.")
+
     if _is_greeting(query):
-        return {
-            "query": query,
-            "answer": "Hello! I'm PersonaAI. Ask me anything about my professional profile — education, skills, projects, or experience.",
-            "sources": [],
-        }
+        answer = "Hello! I'm PersonaAI. Ask me anything about my professional profile — education, skills, projects, or experience."
+        sources = []
+    else:
+        try:
+            context_result = _retrieve_context(query)
+        except (EmptyIndexError, CorruptedStoreError):
+            context_result = {"found_relevant_context": False, "context": "", "retrieved_chunks": []}
+        except DimensionMismatchError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        except RetrievalError:
+            raise HTTPException(
+                status_code=500,
+                detail="Something went wrong while retrieving relevant information. Please try again.",
+            )
+
+        if not context_result["found_relevant_context"]:
+            # Retrieval found nothing relevant enough — per spec, we do NOT
+            # ask Groq to guess. Answer immediately without an API call.
+            answer = NO_CONTEXT_MESSAGE
+            sources = []
+        else:
+            try:
+                history = get_recent_messages(conversation_id, CONVERSATION_HISTORY_LIMIT)
+            except DatabaseError:
+                history = []
+
+            try:
+                answer = generate_answer(query, context_result["context"], history)
+            except MissingAPIKeyError as error:
+                raise HTTPException(status_code=500, detail=str(error))
+            except LLMRequestError as error:
+                raise HTTPException(status_code=502, detail=str(error))
+
+            sources = [
+                {
+                    "chunk_id": chunk["chunk_id"],
+                    "source": chunk["source"],
+                    "score": chunk["score"],
+                }
+                for chunk in context_result["retrieved_chunks"]
+            ]
 
     try:
-        context_result = _retrieve_context(query)
-    except EmptyIndexError:
-        return {"query": query, "answer": NO_CONTEXT_MESSAGE, "sources": []}
-    except CorruptedStoreError:
-        return {"query": query, "answer": NO_CONTEXT_MESSAGE, "sources": []}
-    except DimensionMismatchError as error:
-        raise HTTPException(status_code=400, detail=str(error))
-    except RetrievalError:
-        raise HTTPException(
-            status_code=500,
-            detail="Something went wrong while retrieving relevant information. Please try again.",
-        )
-
-    if not context_result["found_relevant_context"]:
-        # Retrieval found nothing relevant enough — per spec, we do NOT
-        # ask Groq to guess. Answer immediately without an API call.
-        return {"query": query, "answer": NO_CONTEXT_MESSAGE, "sources": []}
-
-    try:
-        answer = generate_answer(query, context_result["context"])
-    except MissingAPIKeyError as error:
-        raise HTTPException(status_code=500, detail=str(error))
-    except LLMRequestError as error:
-        raise HTTPException(status_code=502, detail=str(error))
-
-    sources = [
-        {
-            "chunk_id": chunk["chunk_id"],
-            "source": chunk["source"],
-            "score": chunk["score"],
-        }
-        for chunk in context_result["retrieved_chunks"]
-    ]
+        add_message(conversation_id, "user", query)
+        add_message(conversation_id, "assistant", answer)
+    except (InvalidRoleError, ValueError, DatabaseError):
+        pass  # the answer is still returned even if saving history fails
 
     return {"query": query, "answer": answer, "sources": sources}
 

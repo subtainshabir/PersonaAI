@@ -3,7 +3,6 @@ from __future__ import annotations
 import functools
 import sqlite3
 from datetime import datetime, timezone
-from typing import Optional
 
 from app.services.database import DatabaseError, get_connection
 
@@ -33,7 +32,7 @@ def _now() -> str:
 
 
 @_wrap_db_errors
-def create_conversation(title: Optional[str] = None) -> dict:
+def create_conversation(title: str | None = None) -> dict:
     title = (title or "").strip() or "New Conversation"
     timestamp = _now()
     with get_connection() as conn:
@@ -128,3 +127,15 @@ def get_messages(conversation_id: int) -> list[dict]:
             (conversation_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+@_wrap_db_errors
+def get_recent_messages(conversation_id: int, limit: int) -> list[dict]:
+    get_conversation(conversation_id)
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, conversation_id, role, content, created_at FROM messages "
+            "WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            (conversation_id, limit),
+        ).fetchall()
+    return [dict(row) for row in reversed(rows)]
