@@ -43,6 +43,7 @@ from app.services.conversation_service import (
     get_recent_messages,
     rename_conversation,
 )
+from app.admin_routes.router import router as admin_router
 
 
 @asynccontextmanager
@@ -66,6 +67,8 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 # Jinja2 will render HTML from the templates folder
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
+
+app.include_router(admin_router)
 
 
 # This defines the shape of the JSON the frontend must send us.

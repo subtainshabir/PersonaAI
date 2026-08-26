@@ -9,3 +9,4 @@ numpy
 faiss-cpu
 groq
 python-dotenv
+itsdangerous

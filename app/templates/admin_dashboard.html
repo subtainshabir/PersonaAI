@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin Dashboard — PersonaAI</title>
+
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<link href="/static/css/style.css" rel="stylesheet">
+<link href="/static/css/admin.css" rel="stylesheet">
+</head>
+<body class="admin-body">
+
+<div class="admin-shell">
+
+  <div class="admin-mobile-topbar d-md-none">
+    <button id="adminSidebarToggle" class="icon-btn" aria-label="Open menu">
+      <i class="bi bi-list"></i>
+    </button>
+    <span class="admin-mobile-brand">PersonaAI Admin</span>
+  </div>
+
+  <div id="adminSidebarOverlay" class="admin-sidebar-overlay"></div>
+
+  <aside id="adminSidebar" class="admin-sidebar">
+    <div class="admin-sidebar-brand">
+      <div class="brand-icon"><i class="bi bi-person-badge"></i></div>
+      <div>
+        <div class="admin-sidebar-brand-name">PersonaAI</div>
+        <div class="admin-sidebar-brand-subtitle">Admin</div>
+      </div>
+    </div>
+
+    <nav class="admin-nav">
+      <a class="admin-nav-item active" href="/admin">
+        <i class="bi bi-speedometer2"></i> Dashboard
+      </a>
+      <span class="admin-nav-item disabled">
+        <i class="bi bi-database"></i> Knowledge Base <em>Soon</em>
+      </span>
+      <span class="admin-nav-item disabled">
+        <i class="bi bi-file-earmark-text"></i> Documents <em>Soon</em>
+      </span>
+      <span class="admin-nav-item disabled">
+        <i class="bi bi-gear"></i> Settings <em>Soon</em>
+      </span>
+    </nav>
+  </aside>
+
+  <div class="admin-main">
+    <header class="admin-topbar">
+      <div class="admin-topbar-title">Dashboard</div>
+      <div class="admin-topbar-actions">
+        <button id="adminThemeToggle" class="icon-btn" aria-label="Toggle theme">
+          <i class="bi bi-moon-stars"></i>
+        </button>
+        <div class="admin-topbar-user">Signed in as {{ admin_username }}</div>
+        <a class="admin-logout-btn" href="/admin/logout"><i class="bi bi-box-arrow-right"></i> Log out</a>
+      </div>
+    </header>
+
+    <div class="admin-content">
+      <div class="admin-welcome-card">
+        <h1>Welcome back</h1>
+        <p>Here's a quick look at what PersonaAI currently knows and has recorded.</p>
+      </div>
+
+      <div class="admin-stats-grid">
+        <div class="admin-stat-card">
+          <div class="admin-stat-icon"><i class="bi bi-database"></i></div>
+          <div class="admin-stat-value">{{ chunk_count if chunk_count is not none else "—" }}</div>
+          <div class="admin-stat-label">Knowledge Base Chunks</div>
+        </div>
+
+        <div class="admin-stat-card">
+          <div class="admin-stat-icon"><i class="bi bi-file-earmark-text"></i></div>
+          <div class="admin-stat-value">{{ document_count if document_count is not none else "—" }}</div>
+          <div class="admin-stat-label">Documents Indexed</div>
+        </div>
+
+        <div class="admin-stat-card">
+          <div class="admin-stat-icon"><i class="bi bi-chat-dots"></i></div>
+          <div class="admin-stat-value">{{ conversation_count if conversation_count is not none else "—" }}</div>
+          <div class="admin-stat-label">Conversations</div>
+        </div>
+
+        <div class="admin-stat-card">
+          <div class="admin-stat-icon"><i class="bi bi-activity"></i></div>
+          <div class="admin-stat-value admin-status-{{ 'ok' if llm_configured else 'warn' }}">
+            {{ "Operational" if llm_configured else "Needs Setup" }}
+          </div>
+          <div class="admin-stat-label">System Status</div>
+        </div>
+      </div>
+
+      <div class="admin-placeholder-card">
+        Knowledge Base, Documents, and Settings management land in later phases.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/admin.js"></script>
+</body>
+</html>

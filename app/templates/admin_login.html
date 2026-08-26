@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin Login — PersonaAI</title>
+
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<link href="/static/css/style.css" rel="stylesheet">
+<link href="/static/css/admin.css" rel="stylesheet">
+</head>
+<body class="admin-body">
+
+<div class="admin-login-shell">
+  <div class="admin-login-card">
+    <div class="admin-login-brand">
+      <div class="brand-icon"><i class="bi bi-person-badge"></i></div>
+      <div>
+        <div class="admin-login-brand-name">PersonaAI</div>
+        <div class="admin-login-brand-subtitle">Admin</div>
+      </div>
+    </div>
+
+    <h1 class="admin-login-title">Sign in</h1>
+    <p class="admin-login-subtitle">Restricted area. Owner credentials only.</p>
+
+    {% if error %}
+    <div class="admin-error-banner">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/admin/login" autocomplete="off">
+      <div class="admin-form-group">
+        <label class="admin-form-label" for="username">Username</label>
+        <input class="admin-form-input" type="text" id="username" name="username" required autofocus>
+      </div>
+      <div class="admin-form-group">
+        <label class="admin-form-label" for="password">Password</label>
+        <input class="admin-form-input" type="password" id="password" name="password" required>
+      </div>
+      <button class="admin-submit-btn" type="submit">Sign in</button>
+    </form>
+
+    <div class="admin-login-footer">PersonaAI &middot; Admin access</div>
+  </div>
+</div>
+
+</body>
+</html>
