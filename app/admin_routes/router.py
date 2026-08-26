@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -21,6 +21,11 @@ from app.services.auth_service import (
 )
 from app.services.conversation_service import get_conversations
 from app.services.database import DatabaseError
+from app.services.knowledge_service import (
+    KnowledgeUploadError,
+    add_document_to_knowledge_base,
+    get_knowledge_overview,
+)
 from app.services.vector_store import EmptyIndexError, get_store
 
 router = APIRouter()
@@ -128,8 +133,30 @@ def admin_dashboard(request: Request):
     admin = get_current_admin(request)
     if not admin:
         return RedirectResponse(url="/admin/login", status_code=303)
-    context = {"admin_username": admin, **_get_dashboard_stats()}
+    context = {"admin_username": admin, "active_page": "dashboard", **_get_dashboard_stats()}
     return templates.TemplateResponse(request=request, name="admin_dashboard.html", context=context)
+
+
+@router.get("/admin/knowledge")
+def admin_knowledge_page(request: Request):
+    admin = get_current_admin(request)
+    if not admin:
+        return RedirectResponse(url="/admin/login", status_code=303)
+    context = {"admin_username": admin, "active_page": "knowledge", **get_knowledge_overview()}
+    return templates.TemplateResponse(request=request, name="admin_knowledge.html", context=context)
+
+
+@router.post("/admin/knowledge/upload")
+async def admin_knowledge_upload(
+    file: UploadFile = File(...),
+    admin: str = Depends(require_admin_api),
+):
+    file_bytes = await file.read()
+    try:
+        result = add_document_to_knowledge_base(file.filename, file_bytes)
+    except KnowledgeUploadError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return result
 
 
 @router.get("/admin/logout")

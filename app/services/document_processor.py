@@ -16,12 +16,13 @@ we can test it, reuse it, and later swap pieces without touching routes.
 from __future__ import annotations
 
 import io
+import json
 import re
 
 import pymupdf  # PyMuPDF (the "fitz" import name is now deprecated)
 from docx import Document as DocxDocument
 
-SUPPORTED_EXTENSIONS = {"txt", "pdf", "docx"}
+SUPPORTED_EXTENSIONS = {"txt", "pdf", "docx", "json"}
 
 
 class UnsupportedFileTypeError(Exception):
@@ -70,10 +71,51 @@ def extract_docx(file_bytes: bytes) -> tuple[str, None]:
     return combined_text, None
 
 
+def _flatten_json(data, prefix: str = "") -> list[str]:
+    # Turns arbitrary JSON into "path: value" lines so it can flow through
+    # the same paragraph-based chunker as the other formats.
+    lines: list[str] = []
+
+    if isinstance(data, dict):
+        for key, value in data.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if isinstance(value, (dict, list)):
+                lines.extend(_flatten_json(value, path))
+            else:
+                lines.append(f"{path}: {value}")
+    elif isinstance(data, list):
+        for index, item in enumerate(data):
+            path = f"{prefix}[{index}]"
+            if isinstance(item, (dict, list)):
+                lines.extend(_flatten_json(item, path))
+            else:
+                lines.append(f"{path}: {item}")
+    else:
+        lines.append(f"{prefix}: {data}" if prefix else str(data))
+
+    return lines
+
+
+def extract_json(file_bytes: bytes) -> tuple[str, None]:
+    try:
+        raw = file_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"Invalid JSON file encoding: {error}") from error
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"Invalid JSON file: {error}") from error
+
+    combined_text = "\n\n".join(_flatten_json(data))
+    return combined_text, None
+
+
 EXTRACTORS = {
     "txt": extract_txt,
     "pdf": extract_pdf,
     "docx": extract_docx,
+    "json": extract_json,
 }
 
 

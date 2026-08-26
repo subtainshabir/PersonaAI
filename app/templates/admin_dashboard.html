@@ -13,39 +13,7 @@
 
 <div class="admin-shell">
 
-  <div class="admin-mobile-topbar d-md-none">
-    <button id="adminSidebarToggle" class="icon-btn" aria-label="Open menu">
-      <i class="bi bi-list"></i>
-    </button>
-    <span class="admin-mobile-brand">PersonaAI Admin</span>
-  </div>
-
-  <div id="adminSidebarOverlay" class="admin-sidebar-overlay"></div>
-
-  <aside id="adminSidebar" class="admin-sidebar">
-    <div class="admin-sidebar-brand">
-      <div class="brand-icon"><i class="bi bi-person-badge"></i></div>
-      <div>
-        <div class="admin-sidebar-brand-name">PersonaAI</div>
-        <div class="admin-sidebar-brand-subtitle">Admin</div>
-      </div>
-    </div>
-
-    <nav class="admin-nav">
-      <a class="admin-nav-item active" href="/admin">
-        <i class="bi bi-speedometer2"></i> Dashboard
-      </a>
-      <span class="admin-nav-item disabled">
-        <i class="bi bi-database"></i> Knowledge Base <em>Soon</em>
-      </span>
-      <span class="admin-nav-item disabled">
-        <i class="bi bi-file-earmark-text"></i> Documents <em>Soon</em>
-      </span>
-      <span class="admin-nav-item disabled">
-        <i class="bi bi-gear"></i> Settings <em>Soon</em>
-      </span>
-    </nav>
-  </aside>
+  {% include "_admin_sidebar.html" %}
 
   <div class="admin-main">
     <header class="admin-topbar">

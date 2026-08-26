@@ -34,3 +34,78 @@ adminThemeToggle.addEventListener("click", () => {
   localStorage.setItem("personaai-theme", next);
   applyAdminTheme(next);
 });
+
+const kbUploadForm = document.getElementById("kbUploadForm");
+const kbFileInput = document.getElementById("kbFileInput");
+const kbFileLabel = document.getElementById("kbFileLabel");
+const kbUploadBtn = document.getElementById("kbUploadBtn");
+const kbUploadStatus = document.getElementById("kbUploadStatus");
+const kbDropzone = document.getElementById("kbDropzone");
+
+if (kbUploadForm) {
+  function setSelectedFile(fileList) {
+    if (fileList && fileList.length > 0) {
+      kbFileLabel.textContent = fileList[0].name;
+      kbUploadBtn.disabled = false;
+    } else {
+      kbFileLabel.textContent = "Choose a file or drag it here";
+      kbUploadBtn.disabled = true;
+    }
+  }
+
+  kbFileInput.addEventListener("change", () => setSelectedFile(kbFileInput.files));
+
+  kbDropzone.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    kbDropzone.classList.add("dragover");
+  });
+
+  kbDropzone.addEventListener("dragleave", () => {
+    kbDropzone.classList.remove("dragover");
+  });
+
+  kbDropzone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    kbDropzone.classList.remove("dragover");
+    if (event.dataTransfer.files.length > 0) {
+      kbFileInput.files = event.dataTransfer.files;
+      setSelectedFile(kbFileInput.files);
+    }
+  });
+
+  kbUploadForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (kbFileInput.files.length === 0) return;
+
+    const formData = new FormData();
+    formData.append("file", kbFileInput.files[0]);
+
+    kbUploadBtn.disabled = true;
+    kbUploadBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Uploading...';
+    kbUploadStatus.hidden = true;
+
+    try {
+      const response = await fetch("/admin/knowledge/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Upload failed.");
+      }
+
+      kbUploadStatus.textContent = `"${data.filename}" was added — ${data.total_chunks} chunk(s) indexed.`;
+      kbUploadStatus.className = "admin-upload-status success";
+      kbUploadStatus.hidden = false;
+
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (error) {
+      kbUploadStatus.textContent = error.message;
+      kbUploadStatus.className = "admin-upload-status error";
+      kbUploadStatus.hidden = false;
+      kbUploadBtn.disabled = false;
+      kbUploadBtn.innerHTML = '<i class="bi bi-upload"></i> Upload';
+    }
+  });
+}

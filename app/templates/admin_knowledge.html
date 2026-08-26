@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Knowledge Base — PersonaAI Admin</title>
+
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<link href="/static/css/style.css" rel="stylesheet">
+<link href="/static/css/admin.css" rel="stylesheet">
+</head>
+<body class="admin-body">
+
+<div class="admin-shell">
+
+  {% include "_admin_sidebar.html" %}
+
+  <div class="admin-main">
+    <header class="admin-topbar">
+      <div class="admin-topbar-title">Knowledge Base</div>
+      <div class="admin-topbar-actions">
+        <button id="adminThemeToggle" class="icon-btn" aria-label="Toggle theme">
+          <i class="bi bi-moon-stars"></i>
+        </button>
+        <div class="admin-topbar-user">Signed in as {{ admin_username }}</div>
+        <a class="admin-logout-btn" href="/admin/logout"><i class="bi bi-box-arrow-right"></i> Log out</a>
+      </div>
+    </header>
+
+    <div class="admin-content">
+
+      <div class="admin-kb-status-card admin-kb-status-{{ 'ok' if status == 'loaded' else 'empty' }}">
+        <div class="admin-kb-status-icon">
+          <i class="bi {{ 'bi-check-circle' if status == 'loaded' else 'bi-info-circle' }}"></i>
+        </div>
+        <div>
+          <div class="admin-kb-status-title">
+            {{ "Knowledge base is loaded" if status == "loaded" else "No knowledge base loaded yet" }}
+          </div>
+          <div class="admin-kb-status-subtitle">
+            {% if status == "loaded" %}
+              {{ total_chunks }} chunk{{ "s" if total_chunks != 1 else "" }} across {{ documents|length }} document{{ "s" if documents|length != 1 else "" }}
+            {% else %}
+              Documents processed and indexed through the existing pipeline will appear here.
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      <div class="admin-kb-meta-grid">
+        <div class="admin-stat-card">
+          <div class="admin-stat-icon"><i class="bi bi-cpu"></i></div>
+          <div class="admin-stat-value" style="font-size: 15px;">{{ embedding_model }}</div>
+          <div class="admin-stat-label">Embedding Model</div>
+        </div>
+        <div class="admin-stat-card">
+          <div class="admin-stat-icon"><i class="bi bi-clock-history"></i></div>
+          <div class="admin-stat-value" style="font-size: 15px;">
+            {{ last_updated if last_updated else "—" }}
+          </div>
+          <div class="admin-stat-label">Last Updated</div>
+        </div>
+      </div>
+
+      <div class="admin-upload-card">
+        <div class="admin-section-heading">Add to Knowledge Base</div>
+
+        <form id="kbUploadForm" class="admin-upload-form" novalidate>
+          <label class="admin-upload-dropzone" for="kbFileInput" id="kbDropzone">
+            <i class="bi bi-cloud-arrow-up"></i>
+            <span id="kbFileLabel">Choose a file or drag it here</span>
+            <input type="file" id="kbFileInput" name="file" accept=".pdf,.docx,.txt,.json" hidden>
+          </label>
+          <div class="admin-upload-hint">Supported formats: PDF, DOCX, TXT, JSON — up to {{ max_upload_mb }} MB</div>
+          <button type="submit" id="kbUploadBtn" class="admin-upload-btn" disabled>
+            <i class="bi bi-upload"></i> Upload
+          </button>
+        </form>
+
+        <div id="kbUploadStatus" class="admin-upload-status" hidden></div>
+      </div>
+
+      <div class="admin-section-heading">Knowledge Sources</div>
+
+      {% if documents %}
+        <div class="admin-kb-doc-list">
+          {% for doc in documents %}
+            <div class="admin-kb-doc-row">
+              <div class="admin-kb-doc-icon"><i class="bi bi-file-earmark-text"></i></div>
+              <div class="admin-kb-doc-name">{{ doc.name }}</div>
+              <div class="admin-kb-doc-count">{{ doc.chunk_count }} chunk{{ "s" if doc.chunk_count != 1 else "" }}</div>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="admin-empty-state">
+          <i class="bi bi-inbox"></i>
+          <p>No documents have been indexed into the knowledge base yet.</p>
+        </div>
+      {% endif %}
+
+      <div class="admin-placeholder-card">
+        Editing, deleting, and re-indexing individual documents from this panel will be added in a future phase.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/admin.js"></script>
+</body>
+</html>
