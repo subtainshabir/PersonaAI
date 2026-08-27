@@ -23,6 +23,10 @@ class CorruptedStoreError(Exception):
     pass
 
 
+class IndexRemovalError(Exception):
+    pass
+
+
 class VectorStore:
     def __init__(self, dimension: int):
         if not isinstance(dimension, int) or dimension <= 0:
@@ -80,6 +84,34 @@ class VectorStore:
     @property
     def total_vectors(self) -> int:
         return self.index.ntotal
+
+    def remove_where(self, predicate) -> int:
+        """
+        Removes every vector whose metadata matches predicate(meta), using
+        FAISS's native remove_ids (exact removal on a flat index — no
+        re-embedding or re-chunking involved). Remaining vectors keep their
+        relative order; metadata positions are rebuilt to match the
+        compacted index so the two never drift out of sync.
+        """
+        positions_to_remove = sorted(
+            position for position, meta in self.metadata.items() if predicate(meta)
+        )
+        if not positions_to_remove:
+            return 0
+
+        try:
+            id_selector = faiss.IDSelectorBatch(np.array(positions_to_remove, dtype="int64"))
+            self.index.remove_ids(id_selector)
+        except RuntimeError as error:
+            raise IndexRemovalError(f"Could not remove vectors from the index: {error}") from error
+
+        removed = set(positions_to_remove)
+        remaining_positions = sorted(p for p in self.metadata if p not in removed)
+        self.metadata = {
+            new_position: self.metadata[old_position]
+            for new_position, old_position in enumerate(remaining_positions)
+        }
+        return len(positions_to_remove)
 
     def save(self, index_path: Path = INDEX_PATH, metadata_path: Path = METADATA_PATH) -> None:
         index_path.parent.mkdir(parents=True, exist_ok=True)

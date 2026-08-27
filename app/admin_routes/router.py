@@ -22,8 +22,12 @@ from app.services.auth_service import (
 from app.services.conversation_service import get_conversations
 from app.services.database import DatabaseError
 from app.services.knowledge_service import (
+    DocumentNotFoundError,
+    KnowledgeDeleteError,
     KnowledgeUploadError,
     add_document_to_knowledge_base,
+    delete_document,
+    get_document_detail,
     get_knowledge_overview,
 )
 from app.services.vector_store import EmptyIndexError, get_store
@@ -70,7 +74,7 @@ def _get_dashboard_stats() -> dict:
 
 
 def require_admin_api(request: Request) -> str:
-    """Dependency for future JSON admin API routes: unauthenticated requests get a 401."""
+    """Dependency for JSON admin API routes: unauthenticated requests get a 401."""
     admin = get_current_admin(request)
     if not admin:
         raise HTTPException(status_code=401, detail="Authentication required.")
@@ -157,6 +161,24 @@ async def admin_knowledge_upload(
     except KnowledgeUploadError as error:
         raise HTTPException(status_code=400, detail=str(error))
     return result
+
+
+@router.get("/admin/knowledge/documents/{document_id}")
+def admin_knowledge_document_detail(document_id: str, admin: str = Depends(require_admin_api)):
+    try:
+        return get_document_detail(document_id)
+    except DocumentNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+
+
+@router.delete("/admin/knowledge/documents/{document_id}")
+def admin_knowledge_document_delete(document_id: str, admin: str = Depends(require_admin_api)):
+    try:
+        return delete_document(document_id)
+    except DocumentNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except KnowledgeDeleteError as error:
+        raise HTTPException(status_code=500, detail=str(error))
 
 
 @router.get("/admin/logout")

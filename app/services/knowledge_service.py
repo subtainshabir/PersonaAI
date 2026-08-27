@@ -18,6 +18,7 @@ from app.services.vector_store import (
     METADATA_PATH,
     DimensionMismatchError,
     EmptyIndexError,
+    IndexRemovalError,
     create_store,
     get_store,
 )
@@ -25,9 +26,20 @@ from app.services.vector_store import (
 MAX_UPLOAD_MB = int(os.environ.get("KB_MAX_UPLOAD_MB", "10"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
+_UUID_HEX_RE = re.compile(r"^[0-9a-f]{32}$")
+_LEGACY_ID_RE = re.compile(r"^legacy:[A-Za-z0-9 ._-]{1,150}$")
+
 
 class KnowledgeUploadError(Exception):
     """Raised for any upload failure with a message safe to show the admin."""
+
+
+class DocumentNotFoundError(Exception):
+    """Raised when a document identifier doesn't match anything in the store."""
+
+
+class KnowledgeDeleteError(Exception):
+    """Raised when a valid, existing document could not be deleted."""
 
 
 def _last_updated() -> str | None:
@@ -46,6 +58,126 @@ def _sanitize_filename(filename: str) -> str:
         name = "document"
     name = re.sub(r"[^A-Za-z0-9 ._-]", "_", name)
     return name[:150]
+
+
+def _document_key(meta: dict) -> str:
+    # Phase 18+ uploads carry a document_id. Chunks indexed before that
+    # (e.g. the original bootstrap document) don't, so they're grouped by
+    # source filename instead under a clearly-marked "legacy:" key.
+    document_id = meta.get("document_id")
+    if document_id:
+        return document_id
+    return f"legacy:{meta.get('source', 'unknown')}"
+
+
+def _is_valid_document_id(document_id: str) -> bool:
+    if not isinstance(document_id, str):
+        return False
+    return bool(_UUID_HEX_RE.match(document_id) or _LEGACY_ID_RE.match(document_id))
+
+
+def list_documents() -> list[dict]:
+    """One row per uploaded document, aggregated from existing chunk metadata."""
+    try:
+        store = get_store()
+    except EmptyIndexError:
+        return []
+
+    groups: dict[str, dict] = {}
+    for meta in store.metadata.values():
+        key = _document_key(meta)
+        group = groups.get(key)
+        if group is None:
+            source = meta.get("source") or "Unknown source"
+            file_type = meta.get("file_type") or (get_file_extension(source) or None)
+            group = {
+                "document_id": key,
+                "filename": source,
+                "file_type": file_type,
+                "uploaded_at": meta.get("uploaded_at"),
+                "chunk_count": 0,
+                "characters": 0,
+            }
+            groups[key] = group
+        group["chunk_count"] += 1
+        group["characters"] += len(meta.get("text", ""))
+
+    documents = list(groups.values())
+    documents.sort(key=lambda d: d["uploaded_at"] or "", reverse=True)
+    return documents
+
+
+def get_document_detail(document_id: str) -> dict:
+    if not _is_valid_document_id(document_id):
+        raise DocumentNotFoundError("Invalid document identifier.")
+
+    try:
+        store = get_store()
+    except EmptyIndexError:
+        raise DocumentNotFoundError("No knowledge base is currently loaded.")
+
+    filename = None
+    file_type = None
+    uploaded_at = None
+    chunks = []
+
+    for position in sorted(store.metadata):
+        meta = store.metadata[position]
+        if _document_key(meta) != document_id:
+            continue
+        filename = meta.get("source") or filename
+        file_type = meta.get("file_type") or file_type
+        uploaded_at = meta.get("uploaded_at") or uploaded_at
+        text = meta.get("text", "")
+        chunks.append({"chunk_id": meta.get("chunk_id"), "characters": len(text), "text": text})
+
+    if not chunks:
+        raise DocumentNotFoundError("Document not found.")
+
+    if not file_type and filename:
+        file_type = get_file_extension(filename) or None
+
+    return {
+        "document_id": document_id,
+        "filename": filename,
+        "file_type": file_type,
+        "uploaded_at": uploaded_at,
+        "chunk_count": len(chunks),
+        "characters": sum(chunk["characters"] for chunk in chunks),
+        "chunks": chunks,
+    }
+
+
+def delete_document(document_id: str) -> dict:
+    if not _is_valid_document_id(document_id):
+        raise DocumentNotFoundError("Invalid document identifier.")
+
+    try:
+        store = get_store()
+    except EmptyIndexError:
+        raise DocumentNotFoundError("No knowledge base is currently loaded.")
+
+    filename = next(
+        (meta.get("source") for meta in store.metadata.values() if _document_key(meta) == document_id),
+        None,
+    )
+    if filename is None:
+        raise DocumentNotFoundError("Document not found.")
+
+    try:
+        removed = store.remove_where(lambda meta: _document_key(meta) == document_id)
+    except IndexRemovalError as error:
+        raise KnowledgeDeleteError(str(error)) from error
+
+    if removed == 0:
+        raise DocumentNotFoundError("Document not found.")
+
+    try:
+        store.save()
+    except OSError as error:
+        raise KnowledgeDeleteError("Removed from memory but failed to save changes to disk.") from error
+
+    return {"document_id": document_id, "filename": filename, "removed_chunks": removed}
 
 
 def get_knowledge_overview() -> dict:
@@ -67,16 +199,9 @@ def get_knowledge_overview() -> dict:
     if store.total_vectors == 0:
         return overview
 
-    counts: dict[str, int] = {}
-    for meta in store.metadata.values():
-        source = meta.get("source") or "Unknown source"
-        counts[source] = counts.get(source, 0) + 1
-
     overview["status"] = "loaded"
     overview["total_chunks"] = store.total_vectors
-    overview["documents"] = [
-        {"name": name, "chunk_count": count} for name, count in sorted(counts.items())
-    ]
+    overview["documents"] = list_documents()
     return overview
 
 

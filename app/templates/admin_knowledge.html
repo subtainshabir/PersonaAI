@@ -80,16 +80,35 @@
         <div id="kbUploadStatus" class="admin-upload-status" hidden></div>
       </div>
 
-      <div class="admin-section-heading">Knowledge Sources</div>
+      <div class="admin-section-heading">Documents</div>
 
       {% if documents %}
-        <div class="admin-kb-doc-list">
+        <div class="admin-kb-doc-list" id="kbDocList">
           {% for doc in documents %}
-            <div class="admin-kb-doc-row">
+            <div class="admin-kb-doc-row" data-document-id="{{ doc.document_id }}">
               <div class="admin-kb-doc-icon"><i class="bi bi-file-earmark-text"></i></div>
-              <div class="admin-kb-doc-name">{{ doc.name }}</div>
-              <div class="admin-kb-doc-count">{{ doc.chunk_count }} chunk{{ "s" if doc.chunk_count != 1 else "" }}</div>
+              <div class="admin-kb-doc-main">
+                <div class="admin-kb-doc-name">{{ doc.filename }}</div>
+                <div class="admin-kb-doc-meta">
+                  <span class="admin-kb-badge">{{ doc.file_type.upper() if doc.file_type else "UNKNOWN" }}</span>
+                  <span class="admin-kb-badge admin-kb-badge-ok">Indexed</span>
+                  <span>{{ doc.chunk_count }} chunk{{ "s" if doc.chunk_count != 1 else "" }}</span>
+                  <span>{{ doc.characters }} characters</span>
+                  <span>{{ doc.uploaded_at if doc.uploaded_at else "Upload date unknown" }}</span>
+                </div>
+              </div>
+              <div class="kb-doc-actions">
+                <button type="button" class="icon-btn kb-doc-view-btn" aria-label="View document"><i class="bi bi-eye"></i></button>
+                <button type="button" class="icon-btn kb-doc-delete-btn" aria-label="Delete document"><i class="bi bi-trash"></i></button>
+              </div>
+              <div class="kb-doc-confirm" hidden>
+                <span>Delete this document?</span>
+                <button type="button" class="admin-kb-confirm-btn kb-doc-confirm-delete-btn">Confirm</button>
+                <button type="button" class="admin-kb-cancel-btn kb-doc-cancel-delete-btn">Cancel</button>
+                <span class="kb-doc-error"></span>
+              </div>
             </div>
+            <div class="admin-kb-doc-detail"></div>
           {% endfor %}
         </div>
       {% else %}
@@ -100,7 +119,7 @@
       {% endif %}
 
       <div class="admin-placeholder-card">
-        Editing, deleting, and re-indexing individual documents from this panel will be added in a future phase.
+        Editing and automatic re-indexing after changes will be added in a future phase.
       </div>
     </div>
   </div>

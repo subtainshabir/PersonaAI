@@ -109,3 +109,96 @@ if (kbUploadForm) {
     }
   });
 }
+
+const kbDocList = document.getElementById("kbDocList");
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+if (kbDocList) {
+  kbDocList.addEventListener("click", async (event) => {
+    const viewBtn = event.target.closest(".kb-doc-view-btn");
+    const deleteBtn = event.target.closest(".kb-doc-delete-btn");
+    const cancelBtn = event.target.closest(".kb-doc-cancel-delete-btn");
+    const confirmBtn = event.target.closest(".kb-doc-confirm-delete-btn");
+
+    if (viewBtn) {
+      const row = viewBtn.closest(".admin-kb-doc-row");
+      const documentId = row.dataset.documentId;
+      const detailPanel = row.nextElementSibling;
+      const isOpen = detailPanel.classList.contains("open");
+      detailPanel.classList.toggle("open", !isOpen);
+      if (isOpen || detailPanel.dataset.loaded === "true") return;
+
+      detailPanel.innerHTML = '<div class="admin-kb-doc-detail-loading">Loading...</div>';
+      try {
+        const response = await fetch(`/admin/knowledge/documents/${encodeURIComponent(documentId)}`);
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "Could not load this document.");
+        }
+
+        const chunksHtml = data.chunks
+          .map((chunk) => {
+            const preview = chunk.text.length > 300 ? `${chunk.text.slice(0, 300)}…` : chunk.text;
+            return `<div class="admin-kb-chunk"><span class="admin-kb-chunk-id">#${chunk.chunk_id}</span><p>${escapeHtml(preview)}</p></div>`;
+          })
+          .join("");
+
+        detailPanel.innerHTML = chunksHtml || "<p>No chunk text available.</p>";
+        detailPanel.dataset.loaded = "true";
+      } catch (error) {
+        detailPanel.innerHTML = `<div class="admin-upload-status error">${escapeHtml(error.message)}</div>`;
+      }
+      return;
+    }
+
+    if (deleteBtn) {
+      const row = deleteBtn.closest(".admin-kb-doc-row");
+      row.querySelector(".kb-doc-actions").hidden = true;
+      row.querySelector(".kb-doc-confirm").hidden = false;
+      return;
+    }
+
+    if (cancelBtn) {
+      const row = cancelBtn.closest(".admin-kb-doc-row");
+      row.querySelector(".kb-doc-confirm").hidden = true;
+      row.querySelector(".kb-doc-actions").hidden = false;
+      return;
+    }
+
+    if (confirmBtn) {
+      const row = confirmBtn.closest(".admin-kb-doc-row");
+      const documentId = row.dataset.documentId;
+      const errorSpan = row.querySelector(".kb-doc-error");
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = "Deleting...";
+      errorSpan.textContent = "";
+
+      try {
+        const response = await fetch(`/admin/knowledge/documents/${encodeURIComponent(documentId)}`, {
+          method: "DELETE",
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "Delete failed.");
+        }
+        const detailPanel = row.nextElementSibling;
+        row.remove();
+        if (detailPanel && detailPanel.classList.contains("admin-kb-doc-detail")) {
+          detailPanel.remove();
+        }
+        if (!kbDocList.querySelector(".admin-kb-doc-row")) {
+          window.location.reload();
+        }
+      } catch (error) {
+        errorSpan.textContent = error.message;
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = "Confirm";
+      }
+    }
+  });
+}
