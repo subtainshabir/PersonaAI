@@ -17,30 +17,67 @@ takes text and returns vectors. Responsibilities so far:
 
 from __future__ import annotations
 
-from functools import lru_cache
+import logging
+import os
+import threading
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
+logger = logging.getLogger(__name__)
+
 # A small, well-known model that runs comfortably on a laptop CPU.
 # It is NOT sent to any external API — it downloads once, then runs locally.
-MODEL_NAME = "all-MiniLM-L6-v2"
+# Configurable via the .env / environment so it can be swapped without
+# touching code; falls back to the same default as before.
+MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
 
 
-@lru_cache(maxsize=1)
+class EmbeddingModelLoadError(Exception):
+    """Raised when the embedding model could not be loaded."""
+
+
+_model: SentenceTransformer | None = None
+_model_lock = threading.Lock()
+
+
 def get_model() -> SentenceTransformer:
     """
-    Loads the Sentence Transformer model and reuses it for every call.
+    Loads the Sentence Transformer model once and reuses the same instance
+    for every call after that — across every request, every service
+    (document ingestion, FAISS re-indexing, chatbot query embedding), and
+    every thread.
 
     Loading a model means reading millions of trained weight values from
     disk and setting up the neural network in memory — a relatively slow,
-    one-time cost (roughly a second or two). If we reloaded the model for
-    every single chunk, embedding a 20-chunk document would mean paying
-    that cost 20 times instead of once. @lru_cache(maxsize=1) makes this
-    function do the loading work only the first time it's called; every
-    call after that just returns the same already-loaded model object.
+    one-time cost (roughly a second or two). Doing that once and reusing
+    the result is the entire point of this function.
+
+    The lock only matters for the very first load: FastAPI runs its sync
+    route handlers in a thread pool, so two requests can genuinely arrive
+    at the same instant. Without the lock, both could see "not loaded
+    yet" and each start constructing their own model before either
+    finishes — wasting memory and CPU and leaving two instances where one
+    was intended. The lock makes that race impossible; every call after
+    the first returns immediately without touching it.
     """
-    return SentenceTransformer(MODEL_NAME)
+    global _model
+    if _model is not None:
+        return _model
+
+    with _model_lock:
+        if _model is None:
+            try:
+                logger.info("Loading embedding model '%s'...", MODEL_NAME)
+                _model = SentenceTransformer(MODEL_NAME)
+                logger.info("Embedding model '%s' loaded successfully.", MODEL_NAME)
+            except Exception as error:
+                logger.error("Failed to load embedding model '%s': %s", MODEL_NAME, error)
+                raise EmbeddingModelLoadError(
+                    f"Could not load embedding model '{MODEL_NAME}': {error}"
+                ) from error
+
+    return _model
 
 
 def get_embedding_dimension() -> int:

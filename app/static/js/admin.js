@@ -41,6 +41,80 @@ const kbFileLabel = document.getElementById("kbFileLabel");
 const kbUploadBtn = document.getElementById("kbUploadBtn");
 const kbUploadStatus = document.getElementById("kbUploadStatus");
 const kbDropzone = document.getElementById("kbDropzone");
+const kbJobsSection = document.getElementById("kbJobsSection");
+const kbJobsList = document.getElementById("kbJobsList");
+
+let kbJobsPollTimer = null;
+let kbHadActiveJob = false;
+
+function kbJobBadgeClass(status) {
+  if (status === "completed") return "admin-kb-badge admin-kb-badge-ok";
+  if (status === "failed") return "admin-kb-badge admin-kb-badge-error";
+  return "admin-kb-badge admin-kb-badge-pending";
+}
+
+function renderJobs(jobs) {
+  if (!kbJobsList || !kbJobsSection) return;
+
+  if (jobs.length === 0) {
+    kbJobsSection.hidden = true;
+    return;
+  }
+
+  kbJobsSection.hidden = false;
+  kbJobsList.innerHTML = jobs
+    .map((job) => {
+      const statusLabel = job.status.charAt(0).toUpperCase() + job.status.slice(1);
+      const errorLine =
+        job.status === "failed" && job.error
+          ? `<div class="kb-doc-error">${escapeHtml(job.error)}</div>`
+          : "";
+      return `
+        <div class="admin-kb-doc-row">
+          <div class="admin-kb-doc-icon"><i class="bi bi-file-earmark-arrow-up"></i></div>
+          <div class="admin-kb-doc-main">
+            <div class="admin-kb-doc-name">${escapeHtml(job.label)}</div>
+            <div class="admin-kb-doc-meta">
+              <span class="${kbJobBadgeClass(job.status)}">${statusLabel}</span>
+            </div>
+            ${errorLine}
+          </div>
+        </div>`;
+    })
+    .join("");
+}
+
+async function refreshJobs() {
+  try {
+    const response = await fetch("/admin/knowledge/jobs");
+    if (!response.ok) return;
+    const jobs = await response.json();
+    renderJobs(jobs);
+
+    const hasActive = jobs.some((job) => job.status === "pending" || job.status === "processing");
+
+    if (hasActive) {
+      kbHadActiveJob = true;
+      if (!kbJobsPollTimer) {
+        kbJobsPollTimer = setInterval(refreshJobs, 1500);
+      }
+    } else {
+      if (kbJobsPollTimer) {
+        clearInterval(kbJobsPollTimer);
+        kbJobsPollTimer = null;
+      }
+      if (kbHadActiveJob) {
+        window.location.reload();
+      }
+    }
+  } catch (error) {
+    // Best-effort status display — a failed poll just tries again next tick.
+  }
+}
+
+if (kbJobsList) {
+  refreshJobs();
+}
 
 if (kbUploadForm) {
   function setSelectedFile(fileList) {
@@ -81,7 +155,7 @@ if (kbUploadForm) {
     formData.append("file", kbFileInput.files[0]);
 
     kbUploadBtn.disabled = true;
-    kbUploadBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Uploading...';
+    kbUploadBtn.innerHTML = '<i class="bi bi-arrow-repeat spinning"></i> Uploading...';
     kbUploadStatus.hidden = true;
 
     try {
@@ -95,17 +169,54 @@ if (kbUploadForm) {
         throw new Error(data.detail || "Upload failed.");
       }
 
-      kbUploadStatus.textContent = `"${data.filename}" was added — ${data.total_chunks} chunk(s) indexed.`;
+      kbUploadStatus.textContent = `"${data.filename}" was accepted and is now processing in the background.`;
       kbUploadStatus.className = "admin-upload-status success";
       kbUploadStatus.hidden = false;
 
-      setTimeout(() => window.location.reload(), 1200);
+      kbFileInput.value = "";
+      setSelectedFile(null);
+      refreshJobs();
     } catch (error) {
       kbUploadStatus.textContent = error.message;
       kbUploadStatus.className = "admin-upload-status error";
       kbUploadStatus.hidden = false;
+    } finally {
       kbUploadBtn.disabled = false;
       kbUploadBtn.innerHTML = '<i class="bi bi-upload"></i> Upload';
+    }
+  });
+}
+
+const kbRebuildBtn = document.getElementById("kbRebuildBtn");
+const kbRebuildStatus = document.getElementById("kbRebuildStatus");
+
+if (kbRebuildBtn) {
+  kbRebuildBtn.addEventListener("click", async () => {
+    kbRebuildBtn.disabled = true;
+    kbRebuildBtn.innerHTML = '<i class="bi bi-arrow-repeat spinning"></i> Rebuilding...';
+    kbRebuildStatus.hidden = true;
+
+    try {
+      const response = await fetch("/admin/knowledge/rebuild", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Rebuild failed.");
+      }
+
+      kbRebuildStatus.textContent =
+        data.status === "rebuilt"
+          ? `Index rebuilt — ${data.total_chunks} chunk(s) across ${data.documents} document(s).`
+          : "Nothing to rebuild yet.";
+      kbRebuildStatus.className = "admin-upload-status success";
+      kbRebuildStatus.hidden = false;
+
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (error) {
+      kbRebuildStatus.textContent = error.message;
+      kbRebuildStatus.className = "admin-upload-status error";
+      kbRebuildStatus.hidden = false;
+      kbRebuildBtn.disabled = false;
+      kbRebuildBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Rebuild Index';
     }
   });
 }

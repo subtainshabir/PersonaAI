@@ -15,9 +15,11 @@ from app.services.document_processor import UnsupportedFileTypeError, process_do
 from app.services.chunker import EmptyTextError, chunk_text
 from app.services.embedding_service import (
     MODEL_NAME,
+    EmbeddingModelLoadError,
     embed_chunks,
     embed_text,
     get_embedding_dimension,
+    get_model,
     run_similarity_experiment,
 )
 from app.services.vector_store import (
@@ -53,6 +55,19 @@ async def lifespan(app: FastAPI):
         load_store_from_disk()
     except CorruptedStoreError as error:
         print(f"Warning: saved knowledge base could not be loaded: {error}")
+
+    # Loaded once here so every request — chat queries, uploads, replace,
+    # rebuild — reuses this same instance instead of loading it lazily
+    # (and separately) on whichever request happens to need it first.
+    # If this fails, the app must not start: every retrieval and
+    # ingestion path depends on it, so serving requests without it would
+    # mean silently broken retrieval rather than a clear failure.
+    try:
+        get_model()
+    except EmbeddingModelLoadError as error:
+        print(f"Fatal: embedding model failed to load: {error}")
+        raise
+
     yield
 
 

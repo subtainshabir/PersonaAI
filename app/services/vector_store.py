@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import faiss
@@ -118,13 +119,28 @@ class VectorStore:
         return self.remove_by_positions(positions_to_remove)
 
     def save(self, index_path: Path = INDEX_PATH, metadata_path: Path = METADATA_PATH) -> None:
+        """
+        Writes to temporary files first, then swaps them into place with
+        os.replace (atomic on both POSIX and Windows). If anything fails
+        partway through, the previous index/metadata on disk are left
+        exactly as they were — there's no window where a half-written
+        file could be read back as the active knowledge base.
+        """
         index_path.parent.mkdir(parents=True, exist_ok=True)
-        faiss.write_index(self.index, str(index_path))
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+
+        temp_index_path = index_path.with_name(index_path.name + ".tmp")
+        temp_metadata_path = metadata_path.with_name(metadata_path.name + ".tmp")
+
+        faiss.write_index(self.index, str(temp_index_path))
         payload = {
             "dimension": self.dimension,
             "metadata": {str(position): meta for position, meta in self.metadata.items()},
         }
-        metadata_path.write_text(json.dumps(payload))
+        temp_metadata_path.write_text(json.dumps(payload))
+
+        os.replace(temp_index_path, index_path)
+        os.replace(temp_metadata_path, metadata_path)
 
     @classmethod
     def load(cls, index_path: Path = INDEX_PATH, metadata_path: Path = METADATA_PATH) -> "VectorStore":
@@ -158,9 +174,19 @@ _current_store: VectorStore | None = None
 
 
 def create_store(dimension: int) -> VectorStore:
+    store = VectorStore(dimension)
+    set_active_store(store)
+    return store
+
+
+def set_active_store(store: VectorStore) -> None:
+    """
+    Swaps in an already-built VectorStore as the active one — used after a
+    full rebuild has been built and validated separately, so the switch
+    only happens once the replacement is known to be complete and correct.
+    """
     global _current_store
-    _current_store = VectorStore(dimension)
-    return _current_store
+    _current_store = store
 
 
 def get_store() -> VectorStore:

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -21,16 +22,20 @@ from app.services.auth_service import (
 )
 from app.services.conversation_service import get_conversations
 from app.services.database import DatabaseError
+from app.services.job_service import get_job, list_jobs
 from app.services.knowledge_service import (
     DocumentNotFoundError,
     KnowledgeDeleteError,
+    KnowledgeReindexError,
     KnowledgeReplaceError,
     KnowledgeUploadError,
-    add_document_to_knowledge_base,
     delete_document,
     get_document_detail,
     get_knowledge_overview,
+    rebuild_index,
     replace_document,
+    run_upload_job,
+    start_upload_job,
 )
 from app.services.vector_store import EmptyIndexError, get_store
 
@@ -73,6 +78,18 @@ def _get_dashboard_stats() -> dict:
         pass
 
     return stats
+
+
+def _format_display_time(iso_string: str | None) -> str | None:
+    """Formats a stored ISO timestamp for display only — the raw ISO value
+    is left untouched everywhere else (JSON API responses, stored metadata)."""
+    if not iso_string:
+        return iso_string
+    try:
+        value = datetime.fromisoformat(iso_string)
+    except ValueError:
+        return iso_string
+    return value.strftime("%b %d, %Y · %I:%M %p UTC")
 
 
 def require_admin_api(request: Request) -> str:
@@ -149,20 +166,41 @@ def admin_knowledge_page(request: Request):
     if not admin:
         return RedirectResponse(url="/admin/login", status_code=303)
     context = {"admin_username": admin, "active_page": "knowledge", **get_knowledge_overview()}
+    context["last_updated"] = _format_display_time(context.get("last_updated"))
+    context["documents"] = [
+        {**doc, "uploaded_at": _format_display_time(doc.get("uploaded_at"))}
+        for doc in context.get("documents", [])
+    ]
     return templates.TemplateResponse(request=request, name="admin_knowledge.html", context=context)
 
 
 @router.post("/admin/knowledge/upload")
 async def admin_knowledge_upload(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     admin: str = Depends(require_admin_api),
 ):
     file_bytes = await file.read()
     try:
-        result = add_document_to_knowledge_base(file.filename, file_bytes)
+        job_info = start_upload_job(file.filename, file_bytes)
     except KnowledgeUploadError as error:
         raise HTTPException(status_code=400, detail=str(error))
-    return result
+
+    background_tasks.add_task(run_upload_job, job_info["job_id"], job_info["filename"], file_bytes)
+    return {"job_id": job_info["job_id"], "filename": job_info["filename"], "status": "pending"}
+
+
+@router.get("/admin/knowledge/jobs")
+def admin_knowledge_jobs(admin: str = Depends(require_admin_api)):
+    return list_jobs(job_type="upload")
+
+
+@router.get("/admin/knowledge/jobs/{job_id}")
+def admin_knowledge_job_detail(job_id: str, admin: str = Depends(require_admin_api)):
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return job
 
 
 @router.get("/admin/knowledge/documents/{document_id}")
@@ -197,6 +235,14 @@ async def admin_knowledge_document_replace(
     except KnowledgeUploadError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except KnowledgeReplaceError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.post("/admin/knowledge/rebuild")
+def admin_knowledge_rebuild(admin: str = Depends(require_admin_api)):
+    try:
+        return rebuild_index()
+    except KnowledgeReindexError as error:
         raise HTTPException(status_code=500, detail=str(error))
 
 

@@ -33,7 +33,7 @@
         <div class="admin-kb-status-icon">
           <i class="bi {{ 'bi-check-circle' if status == 'loaded' else 'bi-info-circle' }}"></i>
         </div>
-        <div>
+        <div class="admin-kb-status-body">
           <div class="admin-kb-status-title">
             {{ "Knowledge base is loaded" if status == "loaded" else "No knowledge base loaded yet" }}
           </div>
@@ -45,7 +45,13 @@
             {% endif %}
           </div>
         </div>
+        {% if status == "loaded" %}
+          <button type="button" id="kbRebuildBtn" class="admin-kb-cancel-btn admin-kb-rebuild-btn">
+            <i class="bi bi-arrow-repeat"></i> Rebuild Index
+          </button>
+        {% endif %}
       </div>
+      <div id="kbRebuildStatus" class="admin-upload-status" hidden></div>
 
       <div class="admin-kb-meta-grid">
         <div class="admin-stat-card">
@@ -78,6 +84,11 @@
         </form>
 
         <div id="kbUploadStatus" class="admin-upload-status" hidden></div>
+      </div>
+
+      <div id="kbJobsSection" class="admin-jobs-section" hidden>
+        <div class="admin-section-heading">Recent Uploads</div>
+        <div id="kbJobsList" class="admin-kb-doc-list"></div>
       </div>
 
       <div class="admin-section-heading">Documents</div>

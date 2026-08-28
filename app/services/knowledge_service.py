@@ -14,13 +14,22 @@ from app.services.document_processor import (
     process_document,
 )
 from app.services.embedding_service import MODEL_NAME, embed_chunks, get_embedding_dimension
+from app.services.job_service import (
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_PROCESSING,
+    create_job,
+    update_job,
+)
 from app.services.vector_store import (
     METADATA_PATH,
     DimensionMismatchError,
     EmptyIndexError,
     IndexRemovalError,
+    VectorStore,
     create_store,
     get_store,
+    set_active_store,
 )
 
 MAX_UPLOAD_MB = int(os.environ.get("KB_MAX_UPLOAD_MB", "10"))
@@ -44,6 +53,10 @@ class KnowledgeDeleteError(Exception):
 
 class KnowledgeReplaceError(Exception):
     """Raised when a valid replacement could not be completed safely."""
+
+
+class KnowledgeReindexError(Exception):
+    """Raised when a full index rebuild could not be completed safely."""
 
 
 def _last_updated() -> str | None:
@@ -209,11 +222,11 @@ def get_knowledge_overview() -> dict:
     return overview
 
 
-def _prepare_upload(filename: str, file_bytes: bytes) -> tuple[str, str, list[dict]]:
+def validate_upload(filename: str, file_bytes: bytes) -> tuple[str, str]:
     """
-    Runs the existing validate -> extract -> clean -> chunk -> embed
-    pipeline for one uploaded file. Shared by both add and replace so
-    there's a single place that does this work.
+    Cheap, fast checks only (name/extension/size) — safe to run
+    synchronously in the request before handing off the heavy pipeline
+    steps to a background task.
     """
     safe_name = _sanitize_filename(filename)
     extension = get_file_extension(safe_name)
@@ -229,6 +242,18 @@ def _prepare_upload(filename: str, file_bytes: bytes) -> tuple[str, str, list[di
 
     if len(file_bytes) > MAX_UPLOAD_BYTES:
         raise KnowledgeUploadError(f"File exceeds the {MAX_UPLOAD_MB} MB upload limit.")
+
+    return safe_name, extension
+
+
+def _prepare_upload(filename: str, file_bytes: bytes) -> tuple[str, str, list[dict]]:
+    """
+    Runs the existing validate -> extract -> clean -> chunk -> embed
+    pipeline for one uploaded file. Shared by both add and replace (and,
+    via add_document_to_knowledge_base, by the background upload job) so
+    there's a single place that does this work.
+    """
+    safe_name, extension = validate_upload(filename, file_bytes)
 
     try:
         processed = process_document(safe_name, file_bytes)
@@ -297,6 +322,52 @@ def add_document_to_knowledge_base(filename: str, file_bytes: bytes) -> dict:
     }
 
 
+def start_upload_job(filename: str, file_bytes: bytes) -> dict:
+    """
+    Validates the upload quickly (cheap checks only) and registers a
+    pending job. The caller is expected to schedule run_upload_job to
+    execute afterward (e.g. via FastAPI's BackgroundTasks) so the heavy
+    extract/chunk/embed/FAISS-update work happens outside the request.
+    """
+    safe_name, _extension = validate_upload(filename, file_bytes)
+    job_id = create_job("upload", safe_name)
+    return {"job_id": job_id, "filename": safe_name}
+
+
+def run_upload_job(job_id: str, filename: str, file_bytes: bytes) -> None:
+    """
+    Executed in the background, after the upload request has already
+    returned a "pending" response. Runs the exact same
+    add_document_to_knowledge_base pipeline used by every other upload
+    path — no second implementation — just wrapped with job-status
+    bookkeeping so the admin UI can poll progress.
+
+    A document is only ever reflected in the FAISS store once this
+    succeeds in full: add_document_to_knowledge_base validates, extracts,
+    chunks, and embeds BEFORE it ever calls store.add()/store.save(), so
+    any failure at any stage here leaves the active index exactly as it
+    was — never partially written. The broad except is intentional: this
+    runs with no HTTP response to report to, so any unexpected error must
+    still resolve the job to "failed" rather than leaving it stuck in
+    "processing" forever.
+    """
+    update_job(job_id, status=STATUS_PROCESSING)
+    try:
+        result = add_document_to_knowledge_base(filename, file_bytes)
+    except KnowledgeUploadError as error:
+        update_job(job_id, status=STATUS_FAILED, error=str(error))
+        return
+    except Exception as error:
+        update_job(
+            job_id,
+            status=STATUS_FAILED,
+            error=f"An unexpected error occurred while processing '{filename}'.",
+        )
+        return
+
+    update_job(job_id, status=STATUS_COMPLETED, result=result)
+
+
 def replace_document(document_id: str, filename: str, file_bytes: bytes) -> dict:
     """
     Replaces an existing document's chunks with a freshly processed
@@ -359,4 +430,68 @@ def replace_document(document_id: str, filename: str, file_bytes: bytes) -> dict
         "old_filename": old_filename,
         "total_chunks": len(embedded_chunks),
         "status": "replaced",
+    }
+
+
+def rebuild_index() -> dict:
+    """
+    Rebuilds the FAISS index from scratch, treating the chunk text already
+    stored in metadata as the source of truth — no original files are
+    needed since each chunk's text was preserved at upload time.
+
+    Safety: the new index is built and fully validated as a separate,
+    independent VectorStore in memory. Nothing about the currently active
+    index or its on-disk files is touched until the rebuilt one is
+    confirmed complete and successfully saved. If anything fails along
+    the way, the previous valid index keeps serving requests untouched.
+    """
+    try:
+        current_store = get_store()
+    except EmptyIndexError:
+        return {"status": "empty", "total_chunks": 0, "documents": 0}
+
+    source_chunks = [dict(meta) for _, meta in sorted(current_store.metadata.items())]
+    if not source_chunks:
+        return {"status": "empty", "total_chunks": 0, "documents": 0}
+
+    dimension = get_embedding_dimension()
+
+    try:
+        embedded_chunks = embed_chunks(source_chunks)
+    except Exception as error:
+        raise KnowledgeReindexError(
+            f"Rebuild failed while generating embeddings — the previous index is unchanged: {error}"
+        ) from error
+
+    new_store = VectorStore(dimension)
+    vectors = [chunk["embedding"] for chunk in embedded_chunks]
+    metadatas = [{key: value for key, value in chunk.items() if key != "embedding"} for chunk in embedded_chunks]
+
+    try:
+        new_store.add(vectors, metadatas)
+    except (ValueError, DimensionMismatchError) as error:
+        raise KnowledgeReindexError(
+            f"Rebuild failed while assembling the new index — the previous index is unchanged: {error}"
+        ) from error
+
+    if new_store.total_vectors != len(source_chunks):
+        raise KnowledgeReindexError(
+            "Rebuild produced an incomplete index — the previous index is unchanged."
+        )
+
+    try:
+        new_store.save()
+    except OSError as error:
+        raise KnowledgeReindexError(
+            f"Rebuild succeeded in memory but failed to save to disk — the previous index is unchanged: {error}"
+        ) from error
+
+    # Only swap the active store once the rebuilt one is fully saved.
+    set_active_store(new_store)
+
+    document_count = len({_document_key(meta) for meta in new_store.metadata.values()})
+    return {
+        "status": "rebuilt",
+        "total_chunks": new_store.total_vectors,
+        "documents": document_count,
     }
