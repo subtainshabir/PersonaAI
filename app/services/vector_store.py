@@ -85,17 +85,14 @@ class VectorStore:
     def total_vectors(self) -> int:
         return self.index.ntotal
 
-    def remove_where(self, predicate) -> int:
+    def remove_by_positions(self, positions) -> int:
         """
-        Removes every vector whose metadata matches predicate(meta), using
-        FAISS's native remove_ids (exact removal on a flat index — no
-        re-embedding or re-chunking involved). Remaining vectors keep their
+        Removes an explicit set of positions via FAISS's native remove_ids
+        (exact removal on a flat index). Remaining vectors keep their
         relative order; metadata positions are rebuilt to match the
         compacted index so the two never drift out of sync.
         """
-        positions_to_remove = sorted(
-            position for position, meta in self.metadata.items() if predicate(meta)
-        )
+        positions_to_remove = sorted(set(positions) & set(self.metadata.keys()))
         if not positions_to_remove:
             return 0
 
@@ -112,6 +109,13 @@ class VectorStore:
             for new_position, old_position in enumerate(remaining_positions)
         }
         return len(positions_to_remove)
+
+    def remove_where(self, predicate) -> int:
+        """Removes every vector whose metadata matches predicate(meta)."""
+        positions_to_remove = [
+            position for position, meta in self.metadata.items() if predicate(meta)
+        ]
+        return self.remove_by_positions(positions_to_remove)
 
     def save(self, index_path: Path = INDEX_PATH, metadata_path: Path = METADATA_PATH) -> None:
         index_path.parent.mkdir(parents=True, exist_ok=True)

@@ -99,6 +99,7 @@
               </div>
               <div class="kb-doc-actions">
                 <button type="button" class="icon-btn kb-doc-view-btn" aria-label="View document"><i class="bi bi-eye"></i></button>
+                <button type="button" class="icon-btn kb-doc-replace-btn" aria-label="Replace document"><i class="bi bi-arrow-repeat"></i></button>
                 <button type="button" class="icon-btn kb-doc-delete-btn" aria-label="Delete document"><i class="bi bi-trash"></i></button>
               </div>
               <div class="kb-doc-confirm" hidden>
@@ -106,6 +107,14 @@
                 <button type="button" class="admin-kb-confirm-btn kb-doc-confirm-delete-btn">Confirm</button>
                 <button type="button" class="admin-kb-cancel-btn kb-doc-cancel-delete-btn">Cancel</button>
                 <span class="kb-doc-error"></span>
+              </div>
+              <div class="kb-doc-replace-panel" hidden>
+                <input type="file" class="kb-doc-replace-input" accept=".pdf,.docx,.txt,.json" hidden>
+                <span class="kb-doc-replace-filename">No file selected</span>
+                <button type="button" class="admin-kb-cancel-btn kb-doc-replace-choose-btn">Choose file</button>
+                <button type="button" class="admin-kb-confirm-btn kb-doc-replace-confirm-btn" disabled>Replace</button>
+                <button type="button" class="admin-kb-cancel-btn kb-doc-replace-cancel-btn">Cancel</button>
+                <span class="kb-doc-error kb-doc-replace-status"></span>
               </div>
             </div>
             <div class="admin-kb-doc-detail"></div>

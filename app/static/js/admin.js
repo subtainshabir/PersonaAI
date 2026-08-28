@@ -119,11 +119,32 @@ function escapeHtml(text) {
 }
 
 if (kbDocList) {
+  kbDocList.addEventListener("change", (event) => {
+    const fileInput = event.target.closest(".kb-doc-replace-input");
+    if (!fileInput) return;
+
+    const panel = fileInput.closest(".kb-doc-replace-panel");
+    const filenameSpan = panel.querySelector(".kb-doc-replace-filename");
+    const confirmBtn = panel.querySelector(".kb-doc-replace-confirm-btn");
+
+    if (fileInput.files.length > 0) {
+      filenameSpan.textContent = fileInput.files[0].name;
+      confirmBtn.disabled = false;
+    } else {
+      filenameSpan.textContent = "No file selected";
+      confirmBtn.disabled = true;
+    }
+  });
+
   kbDocList.addEventListener("click", async (event) => {
     const viewBtn = event.target.closest(".kb-doc-view-btn");
     const deleteBtn = event.target.closest(".kb-doc-delete-btn");
     const cancelBtn = event.target.closest(".kb-doc-cancel-delete-btn");
     const confirmBtn = event.target.closest(".kb-doc-confirm-delete-btn");
+    const replaceBtn = event.target.closest(".kb-doc-replace-btn");
+    const replaceChooseBtn = event.target.closest(".kb-doc-replace-choose-btn");
+    const replaceCancelBtn = event.target.closest(".kb-doc-replace-cancel-btn");
+    const replaceConfirmBtn = event.target.closest(".kb-doc-replace-confirm-btn");
 
     if (viewBtn) {
       const row = viewBtn.closest(".admin-kb-doc-row");
@@ -131,6 +152,13 @@ if (kbDocList) {
       const detailPanel = row.nextElementSibling;
       const isOpen = detailPanel.classList.contains("open");
       detailPanel.classList.toggle("open", !isOpen);
+
+      if (!isOpen) {
+        setTimeout(() => {
+          detailPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }, 50);
+      }
+
       if (isOpen || detailPanel.dataset.loaded === "true") return;
 
       detailPanel.innerHTML = '<div class="admin-kb-doc-detail-loading">Loading...</div>';
@@ -173,7 +201,7 @@ if (kbDocList) {
     if (confirmBtn) {
       const row = confirmBtn.closest(".admin-kb-doc-row");
       const documentId = row.dataset.documentId;
-      const errorSpan = row.querySelector(".kb-doc-error");
+      const errorSpan = row.querySelector(".kb-doc-confirm .kb-doc-error");
       confirmBtn.disabled = true;
       confirmBtn.textContent = "Deleting...";
       errorSpan.textContent = "";
@@ -198,6 +226,81 @@ if (kbDocList) {
         errorSpan.textContent = error.message;
         confirmBtn.disabled = false;
         confirmBtn.textContent = "Confirm";
+      }
+      return;
+    }
+
+    if (replaceBtn) {
+      const row = replaceBtn.closest(".admin-kb-doc-row");
+      row.querySelector(".kb-doc-actions").hidden = true;
+      row.querySelector(".kb-doc-replace-panel").hidden = false;
+      return;
+    }
+
+    if (replaceChooseBtn) {
+      const panel = replaceChooseBtn.closest(".kb-doc-replace-panel");
+      panel.querySelector(".kb-doc-replace-input").click();
+      return;
+    }
+
+    if (replaceCancelBtn) {
+      const row = replaceCancelBtn.closest(".admin-kb-doc-row");
+      const panel = row.querySelector(".kb-doc-replace-panel");
+      panel.querySelector(".kb-doc-replace-input").value = "";
+      panel.querySelector(".kb-doc-replace-filename").textContent = "No file selected";
+      panel.querySelector(".kb-doc-replace-confirm-btn").disabled = true;
+      panel.querySelector(".kb-doc-replace-status").textContent = "";
+      panel.querySelector(".kb-doc-replace-status").className = "kb-doc-error kb-doc-replace-status";
+      panel.hidden = true;
+      row.querySelector(".kb-doc-actions").hidden = false;
+      return;
+    }
+
+    if (replaceConfirmBtn) {
+      const panel = replaceConfirmBtn.closest(".kb-doc-replace-panel");
+      const row = replaceConfirmBtn.closest(".admin-kb-doc-row");
+      const documentId = row.dataset.documentId;
+      const fileInput = panel.querySelector(".kb-doc-replace-input");
+      const statusSpan = panel.querySelector(".kb-doc-replace-status");
+
+      if (fileInput.files.length === 0) return;
+
+      const formData = new FormData();
+      formData.append("file", fileInput.files[0]);
+
+      replaceConfirmBtn.disabled = true;
+      replaceConfirmBtn.textContent = "Replacing...";
+      statusSpan.className = "kb-doc-error kb-doc-replace-status";
+      statusSpan.textContent = "";
+
+      try {
+        const response = await fetch(
+          `/admin/knowledge/documents/${encodeURIComponent(documentId)}/replace`,
+          { method: "POST", body: formData }
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "Replace failed.");
+        }
+
+        row.dataset.documentId = data.document_id;
+        row.querySelector(".admin-kb-doc-name").textContent = data.filename;
+
+        const detailPanel = row.nextElementSibling;
+        if (detailPanel && detailPanel.classList.contains("admin-kb-doc-detail")) {
+          detailPanel.classList.remove("open");
+          detailPanel.innerHTML = "";
+          delete detailPanel.dataset.loaded;
+        }
+
+        statusSpan.className = "kb-doc-error kb-doc-replace-status success";
+        statusSpan.textContent = `Replaced — ${data.total_chunks} chunk(s) indexed.`;
+
+        setTimeout(() => window.location.reload(), 1200);
+      } catch (error) {
+        statusSpan.textContent = error.message;
+        replaceConfirmBtn.disabled = false;
+        replaceConfirmBtn.textContent = "Replace";
       }
     }
   });

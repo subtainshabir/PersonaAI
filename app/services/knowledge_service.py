@@ -42,6 +42,10 @@ class KnowledgeDeleteError(Exception):
     """Raised when a valid, existing document could not be deleted."""
 
 
+class KnowledgeReplaceError(Exception):
+    """Raised when a valid replacement could not be completed safely."""
+
+
 def _last_updated() -> str | None:
     try:
         timestamp = os.path.getmtime(METADATA_PATH)
@@ -205,11 +209,11 @@ def get_knowledge_overview() -> dict:
     return overview
 
 
-def add_document_to_knowledge_base(filename: str, file_bytes: bytes) -> dict:
+def _prepare_upload(filename: str, file_bytes: bytes) -> tuple[str, str, list[dict]]:
     """
-    Runs the existing extract -> clean -> chunk -> embed pipeline for one
-    uploaded file, then appends the result to the existing FAISS store
-    (creating it only if none exists yet) instead of replacing it.
+    Runs the existing validate -> extract -> clean -> chunk -> embed
+    pipeline for one uploaded file. Shared by both add and replace so
+    there's a single place that does this work.
     """
     safe_name = _sanitize_filename(filename)
     extension = get_file_extension(safe_name)
@@ -241,6 +245,30 @@ def add_document_to_knowledge_base(filename: str, file_bytes: bytes) -> dict:
         raise KnowledgeUploadError(str(error)) from error
 
     embedded_chunks = embed_chunks(chunks)
+    return safe_name, extension, embedded_chunks
+
+
+def _build_metadatas(embedded_chunks, source, document_id, file_type, uploaded_at) -> list[dict]:
+    return [
+        {
+            "chunk_id": chunk["chunk_id"],
+            "source": source,
+            "text": chunk["text"],
+            "document_id": document_id,
+            "file_type": file_type,
+            "uploaded_at": uploaded_at,
+        }
+        for chunk in embedded_chunks
+    ]
+
+
+def add_document_to_knowledge_base(filename: str, file_bytes: bytes) -> dict:
+    """
+    Runs the existing extract -> clean -> chunk -> embed pipeline for one
+    uploaded file, then appends the result to the existing FAISS store
+    (creating it only if none exists yet) instead of replacing it.
+    """
+    safe_name, extension, embedded_chunks = _prepare_upload(filename, file_bytes)
     dimension = get_embedding_dimension()
 
     try:
@@ -250,19 +278,8 @@ def add_document_to_knowledge_base(filename: str, file_bytes: bytes) -> dict:
 
     document_id = uuid.uuid4().hex
     uploaded_at = datetime.now(timezone.utc).isoformat()
-
     vectors = [chunk["embedding"] for chunk in embedded_chunks]
-    metadatas = [
-        {
-            "chunk_id": chunk["chunk_id"],
-            "source": safe_name,
-            "text": chunk["text"],
-            "document_id": document_id,
-            "file_type": extension,
-            "uploaded_at": uploaded_at,
-        }
-        for chunk in embedded_chunks
-    ]
+    metadatas = _build_metadatas(embedded_chunks, safe_name, document_id, extension, uploaded_at)
 
     try:
         store.add(vectors, metadatas)
@@ -277,4 +294,69 @@ def add_document_to_knowledge_base(filename: str, file_bytes: bytes) -> dict:
         "document_id": document_id,
         "total_chunks": len(embedded_chunks),
         "status": "indexed",
+    }
+
+
+def replace_document(document_id: str, filename: str, file_bytes: bytes) -> dict:
+    """
+    Replaces an existing document's chunks with a freshly processed
+    version of a new file, keeping the same document_id where possible.
+
+    The new file is fully validated, extracted, chunked, and embedded
+    BEFORE anything about the existing document is touched — if any of
+    that fails, the old document is left completely intact. Once the new
+    vectors are ready, they're added to the store first and the old ones
+    (identified by the positions captured before adding) are removed
+    second, so a failure removing the old data can never leave the
+    document missing outright.
+    """
+    if not _is_valid_document_id(document_id):
+        raise DocumentNotFoundError("Invalid document identifier.")
+
+    try:
+        store = get_store()
+    except EmptyIndexError:
+        raise DocumentNotFoundError("No knowledge base is currently loaded.")
+
+    old_positions = {
+        position for position, meta in store.metadata.items() if _document_key(meta) == document_id
+    }
+    if not old_positions:
+        raise DocumentNotFoundError("Document not found.")
+
+    old_filename = store.metadata[next(iter(old_positions))].get("source")
+
+    # Validate and process the replacement fully before removing anything.
+    safe_name, extension, embedded_chunks = _prepare_upload(filename, file_bytes)
+
+    # Legacy records (no stable document_id of their own) get a real one
+    # once they go through this pipeline; regular records keep their id.
+    new_document_id = uuid.uuid4().hex if document_id.startswith("legacy:") else document_id
+    uploaded_at = datetime.now(timezone.utc).isoformat()
+    vectors = [chunk["embedding"] for chunk in embedded_chunks]
+    metadatas = _build_metadatas(embedded_chunks, safe_name, new_document_id, extension, uploaded_at)
+
+    try:
+        store.add(vectors, metadatas)
+    except (ValueError, DimensionMismatchError) as error:
+        raise KnowledgeUploadError(str(error)) from error
+
+    try:
+        store.remove_by_positions(old_positions)
+    except IndexRemovalError as error:
+        raise KnowledgeReplaceError(
+            f"The new version was added, but the old version could not be removed: {error}"
+        ) from error
+
+    try:
+        store.save()
+    except OSError as error:
+        raise KnowledgeReplaceError("Replaced in memory but failed to save changes to disk.") from error
+
+    return {
+        "document_id": new_document_id,
+        "filename": safe_name,
+        "old_filename": old_filename,
+        "total_chunks": len(embedded_chunks),
+        "status": "replaced",
     }

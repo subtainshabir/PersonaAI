@@ -24,11 +24,13 @@ from app.services.database import DatabaseError
 from app.services.knowledge_service import (
     DocumentNotFoundError,
     KnowledgeDeleteError,
+    KnowledgeReplaceError,
     KnowledgeUploadError,
     add_document_to_knowledge_base,
     delete_document,
     get_document_detail,
     get_knowledge_overview,
+    replace_document,
 )
 from app.services.vector_store import EmptyIndexError, get_store
 
@@ -178,6 +180,23 @@ def admin_knowledge_document_delete(document_id: str, admin: str = Depends(requi
     except DocumentNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except KnowledgeDeleteError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.post("/admin/knowledge/documents/{document_id}/replace")
+async def admin_knowledge_document_replace(
+    document_id: str,
+    file: UploadFile = File(...),
+    admin: str = Depends(require_admin_api),
+):
+    file_bytes = await file.read()
+    try:
+        return replace_document(document_id, file.filename, file_bytes)
+    except DocumentNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except KnowledgeUploadError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except KnowledgeReplaceError as error:
         raise HTTPException(status_code=500, detail=str(error))
 
 
