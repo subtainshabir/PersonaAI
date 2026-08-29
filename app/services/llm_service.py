@@ -115,3 +115,45 @@ def generate_answer(query: str, context: str, history: list[dict] | None = None)
 
     answer = response.choices[0].message.content
     return answer.strip() if answer else ""
+
+
+TITLE_SYSTEM_PROMPT = (
+    "You write short conversation titles. Given a user's message, reply "
+    "with ONLY a concise title of 3 to 8 words that captures its topic, "
+    "in the same language as the message. Do not use quotation marks, "
+    "end punctuation, or any explanation — just the title text."
+)
+
+# Titles only need the gist of the message, not the whole thing — this
+# bounds the request size even for an unusually long first message.
+MAX_TITLE_INPUT_CHARS = 500
+
+
+def generate_title(message: str) -> str:
+    """
+    Generates a short (3-8 word) conversation title from a single user
+    message. Deliberately sends only that one message — never the full
+    conversation history — so the request stays small and fast, per this
+    feature's latency/cost requirements.
+    """
+    if not message.strip():
+        raise ValueError("message cannot be empty.")
+
+    client = _get_client()
+    trimmed_message = message.strip()[:MAX_TITLE_INPUT_CHARS]
+
+    try:
+        response = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": TITLE_SYSTEM_PROMPT},
+                {"role": "user", "content": trimmed_message},
+            ],
+            temperature=0.3,
+            max_tokens=20,
+        )
+    except Exception as error:
+        raise LLMRequestError(f"Groq title request failed: {error}") from error
+
+    title = response.choices[0].message.content
+    return title.strip() if title else ""

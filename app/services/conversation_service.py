@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import functools
+import re
 import sqlite3
 from datetime import datetime, timezone
 
 from app.services.database import DatabaseError, get_connection
 
 VALID_ROLES = {"user", "assistant"}
+DEFAULT_TITLE = "New Conversation"
+MAX_TITLE_LENGTH = 80
+
+_HTML_TAG_RE = re.compile(r"<[^>]*>")
+_CONTROL_CHARS_RE = re.compile(r"[\r\n\t\x00-\x1f\x7f]")
 
 
 class ConversationNotFoundError(Exception):
@@ -31,9 +37,41 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _sanitize_title(title: str) -> str:
+    """
+    Strips any HTML tags, control characters (including newlines), and
+    excess length from a title before it's ever stored — applied to every
+    write path (auto-generated or a future manual rename) so no unsafe
+    text reaches the sidebar.
+    """
+    title = _HTML_TAG_RE.sub("", title or "")
+    title = _CONTROL_CHARS_RE.sub(" ", title)
+    title = re.sub(r"\s+", " ", title).strip()
+    title = title.strip("\"'")
+    if len(title) > MAX_TITLE_LENGTH:
+        title = title[:MAX_TITLE_LENGTH].rstrip()
+    return title
+
+
+def is_default_title(title: str) -> bool:
+    return (title or "").strip().lower() == DEFAULT_TITLE.lower()
+
+
+def generate_fallback_title(message: str) -> str:
+    """
+    A safe, non-LLM title used when generation fails or isn't available:
+    just the first few words of the user's own message, sanitized the
+    same way any other title is. Naturally preserves whatever language
+    the user wrote in, since it's their own words.
+    """
+    words = (message or "").strip().split()
+    fallback = " ".join(words[:8])
+    return _sanitize_title(fallback) or DEFAULT_TITLE
+
+
 @_wrap_db_errors
 def create_conversation(title: str | None = None) -> dict:
-    title = (title or "").strip() or "New Conversation"
+    title = _sanitize_title(title or "") or DEFAULT_TITLE
     timestamp = _now()
     with get_connection() as conn:
         cursor = conn.execute(
@@ -67,7 +105,7 @@ def get_conversations() -> list[dict]:
 
 @_wrap_db_errors
 def rename_conversation(conversation_id: int, title: str) -> dict:
-    title = title.strip()
+    title = _sanitize_title(title)
     if not title:
         raise ValueError("title cannot be empty.")
     with get_connection() as conn:

@@ -31,7 +31,7 @@ from app.services.vector_store import (
     load_store_from_disk,
 )
 from app.services.context_builder import build_context
-from app.services.llm_service import LLMRequestError, MissingAPIKeyError, generate_answer
+from app.services.llm_service import LLMRequestError, MissingAPIKeyError, generate_answer, generate_title
 from app.services.database import DatabaseError, init_db
 from app.services.conversation_service import (
     ConversationNotFoundError,
@@ -39,10 +39,12 @@ from app.services.conversation_service import (
     add_message,
     create_conversation,
     delete_conversation,
+    generate_fallback_title,
     get_conversation,
     get_conversations,
     get_messages,
     get_recent_messages,
+    is_default_title,
     rename_conversation,
 )
 from app.admin_routes.router import router as admin_router
@@ -176,11 +178,16 @@ def chat(chat_request: ChatRequest):
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
     try:
-        get_conversation(conversation_id)
+        conversation = get_conversation(conversation_id)
     except ConversationNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except DatabaseError:
         raise HTTPException(status_code=500, detail="A database error occurred.")
+
+    # Only the conversation's first meaningful message should generate a
+    # title — once it's been renamed away from the default, later messages
+    # never touch this again.
+    should_generate_title = is_default_title(conversation["title"]) and not _is_greeting(query)
 
     if _is_greeting(query):
         answer = "Hello! I'm PersonaAI. Ask me anything about my professional profile — education, skills, projects, or experience."
@@ -230,6 +237,18 @@ def chat(chat_request: ChatRequest):
         add_message(conversation_id, "assistant", answer)
     except (InvalidRoleError, ValueError, DatabaseError):
         pass  # the answer is still returned even if saving history fails
+
+    if should_generate_title:
+        # Best-effort only: a title-generation failure must never affect
+        # the chat response itself, so every step here is guarded.
+        try:
+            new_title = generate_title(query)
+        except (MissingAPIKeyError, LLMRequestError, ValueError):
+            new_title = generate_fallback_title(query)
+        try:
+            rename_conversation(conversation_id, new_title)
+        except (ConversationNotFoundError, ValueError, DatabaseError):
+            pass
 
     return {"query": query, "answer": answer, "sources": sources}
 
