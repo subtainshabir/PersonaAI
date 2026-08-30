@@ -17,12 +17,16 @@ from app.services.embedding_service import MODEL_NAME, embed_chunks, get_embeddi
 from app.services.job_service import (
     STATUS_COMPLETED,
     STATUS_FAILED,
+    STATUS_PENDING,
     STATUS_PROCESSING,
     create_job,
+    list_jobs,
     update_job,
 )
 from app.services.vector_store import (
+    INDEX_PATH,
     METADATA_PATH,
+    CorruptedStoreError,
     DimensionMismatchError,
     EmptyIndexError,
     IndexRemovalError,
@@ -495,3 +499,186 @@ def rebuild_index() -> dict:
         "total_chunks": new_store.total_vectors,
         "documents": document_count,
     }
+
+
+def validate_knowledge_base() -> dict:
+    """
+    Read-only integrity check across documents/chunks/metadata/FAISS and
+    background processing history. Never mutates the active store or
+    writes to disk — this only reads and reports. If a problem points at
+    FAISS specifically, the existing rebuild_index() is the recovery
+    path, not something this function does itself.
+    """
+    STUCK_THRESHOLD_MINUTES = 10
+
+    report = {
+        "status": "healthy",
+        "checks": [],
+        "total_documents": 0,
+        "total_chunks": 0,
+        "total_vectors": None,
+        "failed_documents": [],
+        "can_rebuild": False,
+    }
+
+    def add_check(name: str, status: str, message: str) -> None:
+        report["checks"].append({"name": name, "status": status, "message": message})
+        if status == "error":
+            report["status"] = "error"
+        elif status == "warning" and report["status"] == "healthy":
+            report["status"] = "warning"
+
+    index_exists = INDEX_PATH.exists()
+    metadata_exists = METADATA_PATH.exists()
+
+    if not index_exists and not metadata_exists:
+        add_check("faiss_files", "info", "No FAISS index files on disk yet — nothing has been indexed.")
+    elif index_exists != metadata_exists:
+        add_check(
+            "faiss_files", "error",
+            "Only one of the two FAISS index files is present on disk (index and metadata must both exist together).",
+        )
+    else:
+        add_check("faiss_files", "ok", "FAISS index files are present on disk.")
+
+    try:
+        store = get_store()
+        active_loaded = True
+    except EmptyIndexError:
+        store = None
+        active_loaded = False
+
+    if not active_loaded:
+        if index_exists and metadata_exists:
+            # Files exist but nothing is active in the running app — try an
+            # independent, read-only load (reusing the existing loader) just
+            # to tell "corrupted" apart from some other reason it's not
+            # active, without changing the app's actual live state.
+            try:
+                VectorStore.load()
+                add_check(
+                    "faiss_index", "warning",
+                    "Saved FAISS index files exist and loaded successfully during this check, "
+                    "but no index is currently active in the running application.",
+                )
+            except CorruptedStoreError as error:
+                add_check("faiss_index", "error", f"Saved FAISS index is corrupted: {error}")
+            except Exception as error:
+                add_check("faiss_index", "unknown", f"Could not inspect the saved FAISS index: {error}")
+        else:
+            add_check("faiss_index", "info", "No knowledge base has been indexed yet.")
+    else:
+        add_check("faiss_index", "ok", "FAISS index is loaded and active.")
+
+        total_vectors = store.total_vectors
+        total_metadata = len(store.metadata)
+        report["total_vectors"] = total_vectors
+        report["total_chunks"] = total_metadata
+        report["can_rebuild"] = total_metadata > 0
+
+        if total_vectors != total_metadata:
+            add_check(
+                "vector_metadata_count", "error",
+                f"FAISS has {total_vectors} vector(s) but metadata has {total_metadata} entry(ies).",
+            )
+        else:
+            add_check(
+                "vector_metadata_count", "ok",
+                f"{total_vectors} vector(s) match {total_metadata} metadata entry(ies).",
+            )
+
+        missing_fields = []
+        orphaned = []
+        invalid_refs = []
+        seen_keys = set()
+        duplicate_count = 0
+
+        for position, meta in store.metadata.items():
+            if not isinstance(meta, dict) or not meta.get("text"):
+                missing_fields.append(position)
+                continue
+
+            if not meta.get("source"):
+                orphaned.append(position)
+
+            document_id = meta.get("document_id")
+            if document_id is not None and not _is_valid_document_id(document_id):
+                invalid_refs.append(position)
+
+            key = (document_id, meta.get("chunk_id"))
+            if document_id is not None:
+                if key in seen_keys:
+                    duplicate_count += 1
+                seen_keys.add(key)
+
+        if missing_fields:
+            add_check(
+                "chunk_metadata", "error",
+                f"{len(missing_fields)} chunk(s) are missing required metadata (text content).",
+            )
+        else:
+            add_check("chunk_metadata", "ok", "All chunk metadata entries have the required fields.")
+
+        if orphaned:
+            add_check(
+                "orphaned_chunks", "warning",
+                f"{len(orphaned)} chunk(s) have no source document attribution.",
+            )
+        else:
+            add_check("orphaned_chunks", "ok", "No orphaned chunks found.")
+
+        if invalid_refs:
+            add_check(
+                "document_references", "error",
+                f"{len(invalid_refs)} chunk(s) reference an invalid document identifier.",
+            )
+        else:
+            add_check("document_references", "ok", "All document references are valid.")
+
+        if duplicate_count:
+            add_check(
+                "duplicate_records", "error",
+                f"{duplicate_count} duplicate document/chunk record(s) detected.",
+            )
+        else:
+            add_check("duplicate_records", "ok", "No duplicate document/chunk records detected.")
+
+        report["total_documents"] = len(
+            {_document_key(meta) for meta in store.metadata.values() if isinstance(meta, dict)}
+        )
+
+    jobs = list_jobs(job_type="upload")
+    now = datetime.now(timezone.utc)
+    failed_jobs = []
+    stuck_jobs = []
+
+    for job in jobs:
+        if job["status"] == STATUS_FAILED:
+            failed_jobs.append({"filename": job["label"], "error": job["error"]})
+        elif job["status"] in (STATUS_PENDING, STATUS_PROCESSING):
+            try:
+                updated_at = datetime.fromisoformat(job["updated_at"])
+                age_minutes = (now - updated_at).total_seconds() / 60
+            except (ValueError, TypeError):
+                age_minutes = None
+            if age_minutes is not None and age_minutes > STUCK_THRESHOLD_MINUTES:
+                stuck_jobs.append(
+                    {"filename": job["label"], "status": job["status"], "minutes": round(age_minutes)}
+                )
+
+    report["failed_documents"] = failed_jobs
+
+    if failed_jobs:
+        add_check("failed_processing", "warning", f"{len(failed_jobs)} document(s) failed processing.")
+    else:
+        add_check("failed_processing", "ok", "No failed processing records.")
+
+    if stuck_jobs:
+        add_check(
+            "stuck_processing", "warning",
+            f"{len(stuck_jobs)} document(s) appear stuck in processing for over {STUCK_THRESHOLD_MINUTES} minutes.",
+        )
+    else:
+        add_check("stuck_processing", "ok", "No documents stuck in processing.")
+
+    return report

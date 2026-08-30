@@ -68,6 +68,17 @@
         </div>
       </div>
 
+      <div class="admin-integrity-card">
+        <div class="admin-section-heading">Knowledge Base Integrity</div>
+        <div class="admin-upload-hint" style="margin-bottom: 12px;">
+          Checks for inconsistencies between documents, chunks, embeddings, metadata, and the FAISS index.
+        </div>
+        <button type="button" id="kbValidateBtn" class="admin-kb-cancel-btn admin-kb-rebuild-btn">
+          <i class="bi bi-shield-check"></i> Run Integrity Check
+        </button>
+        <div id="kbValidateResult" class="admin-integrity-result" hidden></div>
+      </div>
+
       <div class="admin-upload-card">
         <div class="admin-section-heading">Add to Knowledge Base</div>
 

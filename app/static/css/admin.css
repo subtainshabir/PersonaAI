@@ -690,6 +690,117 @@ body.admin-body {
   display: none !important;
 }
 
+/* ---------- KNOWLEDGE BASE INTEGRITY ---------- */
+.admin-integrity-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 22px;
+  margin-bottom: 24px;
+}
+
+.admin-integrity-result {
+  margin-top: 16px;
+}
+
+.admin-integrity-result[hidden] {
+  display: none !important;
+}
+
+.admin-integrity-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.admin-integrity-overall {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.admin-integrity-overall-healthy {
+  background: rgba(22, 163, 74, 0.12);
+  color: #16a34a;
+}
+
+.admin-integrity-overall-warning {
+  background: rgba(217, 119, 6, 0.14);
+  color: #d97706;
+}
+
+.admin-integrity-overall-error {
+  background: rgba(220, 38, 38, 0.12);
+  color: #dc2626;
+}
+
+.admin-integrity-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+}
+
+.admin-integrity-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.admin-integrity-check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 12px;
+}
+
+.admin-integrity-check-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.admin-integrity-check-icon.ok { color: #16a34a; }
+.admin-integrity-check-icon.warning { color: #d97706; }
+.admin-integrity-check-icon.error { color: #dc2626; }
+.admin-integrity-check-icon.info,
+.admin-integrity-check-icon.unknown { color: var(--text-muted); }
+
+.admin-integrity-check-name {
+  font-weight: 700;
+  margin-bottom: 2px;
+  text-transform: capitalize;
+}
+
+.admin-integrity-check-message {
+  color: var(--text-muted);
+}
+
+.admin-integrity-failed-list {
+  margin-bottom: 14px;
+}
+
+.admin-integrity-failed-item {
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.08);
+  color: #dc2626;
+  margin-bottom: 6px;
+}
+
 .admin-upload-form {
   display: flex;
   flex-direction: column;

@@ -190,33 +190,145 @@ if (kbUploadForm) {
 const kbRebuildBtn = document.getElementById("kbRebuildBtn");
 const kbRebuildStatus = document.getElementById("kbRebuildStatus");
 
+async function runRebuild(button, statusEl) {
+  const originalHTML = button.innerHTML;
+  button.disabled = true;
+  button.innerHTML = '<i class="bi bi-arrow-repeat spinning"></i> Rebuilding...';
+  if (statusEl) statusEl.hidden = true;
+
+  try {
+    const response = await fetch("/admin/knowledge/rebuild", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || "Rebuild failed.");
+    }
+
+    const message =
+      data.status === "rebuilt"
+        ? `Index rebuilt — ${data.total_chunks} chunk(s) across ${data.documents} document(s).`
+        : "Nothing to rebuild yet.";
+
+    if (statusEl) {
+      statusEl.textContent = message;
+      statusEl.className = "admin-upload-status success";
+      statusEl.hidden = false;
+    }
+
+    setTimeout(() => window.location.reload(), 1200);
+  } catch (error) {
+    if (statusEl) {
+      statusEl.textContent = error.message;
+      statusEl.className = "admin-upload-status error";
+      statusEl.hidden = false;
+    }
+    button.disabled = false;
+    button.innerHTML = originalHTML;
+  }
+}
+
 if (kbRebuildBtn) {
-  kbRebuildBtn.addEventListener("click", async () => {
-    kbRebuildBtn.disabled = true;
-    kbRebuildBtn.innerHTML = '<i class="bi bi-arrow-repeat spinning"></i> Rebuilding...';
-    kbRebuildStatus.hidden = true;
+  kbRebuildBtn.addEventListener("click", () => runRebuild(kbRebuildBtn, kbRebuildStatus));
+}
+
+const kbValidateBtn = document.getElementById("kbValidateBtn");
+const kbValidateResult = document.getElementById("kbValidateResult");
+
+function integrityOverallClass(status) {
+  return `admin-integrity-overall admin-integrity-overall-${status === "healthy" ? "healthy" : status}`;
+}
+
+function renderValidation(data) {
+  if (!kbValidateResult) return;
+
+  const overallLabel = data.status.charAt(0).toUpperCase() + data.status.slice(1);
+  const stats = `
+    <div class="admin-integrity-stats">
+      <span>${data.total_documents} document(s)</span>
+      <span>${data.total_chunks} chunk(s)</span>
+      <span>${data.total_vectors === null ? "—" : data.total_vectors} vector(s)</span>
+    </div>`;
+
+  const checksHtml = data.checks
+    .map((check) => {
+      const icon =
+        check.status === "ok"
+          ? "bi-check-circle-fill"
+          : check.status === "warning"
+          ? "bi-exclamation-triangle-fill"
+          : check.status === "error"
+          ? "bi-x-circle-fill"
+          : "bi-question-circle-fill";
+      return `
+        <div class="admin-integrity-check-row">
+          <i class="bi ${icon} admin-integrity-check-icon ${check.status}"></i>
+          <div>
+            <div class="admin-integrity-check-name">${escapeHtml(check.name.replace(/_/g, " "))}</div>
+            <div class="admin-integrity-check-message">${escapeHtml(check.message)}</div>
+          </div>
+        </div>`;
+    })
+    .join("");
+
+  const failedHtml =
+    data.failed_documents && data.failed_documents.length > 0
+      ? `<div class="admin-integrity-failed-list">${data.failed_documents
+          .map(
+            (doc) =>
+              `<div class="admin-integrity-failed-item">${escapeHtml(doc.filename)}: ${escapeHtml(doc.error || "Unknown error")}</div>`
+          )
+          .join("")}</div>`
+      : "";
+
+  const faissIssue = data.checks.some(
+    (check) =>
+      ["faiss_files", "faiss_index", "vector_metadata_count"].includes(check.name) &&
+      (check.status === "error" || check.status === "warning")
+  );
+
+  const rebuildHtml =
+    faissIssue && data.can_rebuild
+      ? `<button type="button" id="kbValidateRebuildBtn" class="admin-kb-confirm-btn">
+           <i class="bi bi-arrow-repeat"></i> Rebuild Index Now
+         </button>`
+      : "";
+
+  kbValidateResult.innerHTML = `
+    <div class="admin-integrity-summary">
+      Status: <span class="${integrityOverallClass(data.status)}">${overallLabel}</span>
+    </div>
+    ${stats}
+    <div class="admin-integrity-checks">${checksHtml}</div>
+    ${failedHtml}
+    ${rebuildHtml}
+  `;
+  kbValidateResult.hidden = false;
+
+  const rebuildNowBtn = document.getElementById("kbValidateRebuildBtn");
+  if (rebuildNowBtn) {
+    rebuildNowBtn.addEventListener("click", () => runRebuild(rebuildNowBtn, null));
+  }
+}
+
+if (kbValidateBtn) {
+  kbValidateBtn.addEventListener("click", async () => {
+    const originalHTML = kbValidateBtn.innerHTML;
+    kbValidateBtn.disabled = true;
+    kbValidateBtn.innerHTML = '<i class="bi bi-arrow-repeat spinning"></i> Checking...';
+    kbValidateResult.hidden = true;
 
     try {
-      const response = await fetch("/admin/knowledge/rebuild", { method: "POST" });
+      const response = await fetch("/admin/knowledge/validate", { method: "POST" });
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.detail || "Rebuild failed.");
+        throw new Error(data.detail || "Validation failed.");
       }
-
-      kbRebuildStatus.textContent =
-        data.status === "rebuilt"
-          ? `Index rebuilt — ${data.total_chunks} chunk(s) across ${data.documents} document(s).`
-          : "Nothing to rebuild yet.";
-      kbRebuildStatus.className = "admin-upload-status success";
-      kbRebuildStatus.hidden = false;
-
-      setTimeout(() => window.location.reload(), 1200);
+      renderValidation(data);
     } catch (error) {
-      kbRebuildStatus.textContent = error.message;
-      kbRebuildStatus.className = "admin-upload-status error";
-      kbRebuildStatus.hidden = false;
-      kbRebuildBtn.disabled = false;
-      kbRebuildBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Rebuild Index';
+      kbValidateResult.innerHTML = `<div class="admin-upload-status error">${escapeHtml(error.message)}</div>`;
+      kbValidateResult.hidden = false;
+    } finally {
+      kbValidateBtn.disabled = false;
+      kbValidateBtn.innerHTML = originalHTML;
     }
   });
 }

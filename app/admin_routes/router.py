@@ -36,6 +36,7 @@ from app.services.knowledge_service import (
     replace_document,
     run_upload_job,
     start_upload_job,
+    validate_knowledge_base,
 )
 from app.services.vector_store import EmptyIndexError, get_store
 
@@ -244,6 +245,22 @@ def admin_knowledge_rebuild(admin: str = Depends(require_admin_api)):
         return rebuild_index()
     except KnowledgeReindexError as error:
         raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.post("/admin/knowledge/validate")
+def admin_knowledge_validate(admin: str = Depends(require_admin_api)):
+    try:
+        return validate_knowledge_base()
+    except Exception as error:
+        return {
+            "status": "error",
+            "checks": [{"name": "validation", "status": "error", "message": f"Validation failed to run: {error}"}],
+            "total_documents": 0,
+            "total_chunks": 0,
+            "total_vectors": None,
+            "failed_documents": [],
+            "can_rebuild": False,
+        }
 
 
 @router.get("/admin/logout")
