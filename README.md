@@ -481,6 +481,6 @@ Genuinely unimplemented ideas, not existing functionality:
 
 ---
 
-## 📄 License
+## 📞 Contact
 
-No license has currently been specified for this repository.
+If anything in this README is unclear or doesn't match what you find in the code, feel free to reach out.
