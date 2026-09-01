@@ -484,3 +484,11 @@ Genuinely unimplemented ideas, not existing functionality:
 ## 📞 Contact
 
 If anything in this README is unclear or doesn't match what you find in the code, feel free to reach out.
+
+## 🎥 See PersonaAI in Action
+
+> **From your documents to your own AI assistant.**
+
+Watch the full functional demonstration of PersonaAI, covering its RAG pipeline, Knowledge Base, document processing, FAISS retrieval, conversation memory, intelligent chat titles, and admin panel.
+
+🔴 **[▶ Watch the Full Demo on YouTube](https://youtu.be/Bc8jUMfENlQ)**
