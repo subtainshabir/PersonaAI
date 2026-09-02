@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PersonaAI</title>
+<title>PersonaAI — Your Professional AI Identity</title>
 
 <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
@@ -48,9 +48,6 @@
     </div>
 
     <div class="sidebar-footer">
-      <button id="knowledgeDevBtn" class="dev-link-btn">
-        <i class="bi bi-file-earmark-arrow-up"></i> Knowledge Ingestion (Dev)
-      </button>
       <div class="profile-card">
         <div class="profile-icon"><i class="bi bi-mortarboard"></i></div>
         <div>
@@ -119,30 +116,6 @@
     </div>
 
   </main>
-
-  <!-- KNOWLEDGE INGESTION TEST PANEL (Phase 2 — development only) -->
-  <div id="knowledgeModalOverlay" class="knowledge-modal-overlay">
-    <div class="knowledge-modal">
-      <div class="knowledge-modal-header">
-        <h2><i class="bi bi-file-earmark-arrow-up"></i> Knowledge Ingestion</h2>
-        <button id="knowledgeCloseBtn" class="icon-btn" aria-label="Close">
-          <i class="bi bi-x-lg"></i>
-        </button>
-      </div>
-
-      <p class="knowledge-modal-subtitle">Upload your personal information</p>
-
-      <div class="knowledge-upload-row">
-        <input type="file" id="knowledgeFileInput" accept=".txt,.pdf,.docx" class="knowledge-file-input">
-        <button id="knowledgeProcessBtn" class="new-chat-btn knowledge-process-btn">
-          <i class="bi bi-gear"></i> Process Document
-        </button>
-      </div>
-      <div class="knowledge-supported">Supported: TXT &bull; PDF &bull; DOCX</div>
-
-      <div id="knowledgeResult" class="knowledge-result"></div>
-    </div>
-  </div>
 </div>
 
 <script src="/static/js/app.js"></script>

@@ -6,10 +6,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services.document_processor import UnsupportedFileTypeError, process_document
 from app.services.chunker import EmptyTextError, chunk_text
@@ -33,6 +33,7 @@ from app.services.vector_store import (
 from app.services.context_builder import build_context
 from app.services.llm_service import LLMRequestError, MissingAPIKeyError, generate_answer, generate_title
 from app.services.database import DatabaseError, init_db
+from app.services.knowledge_service import MAX_UPLOAD_BYTES, MAX_UPLOAD_MB
 from app.services.conversation_service import (
     ConversationNotFoundError,
     InvalidRoleError,
@@ -48,6 +49,7 @@ from app.services.conversation_service import (
     rename_conversation,
 )
 from app.admin_routes.router import router as admin_router
+from app.admin_routes.router import require_admin_api
 
 
 @asynccontextmanager
@@ -75,6 +77,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="PersonaAI", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
 # BASE_DIR points to this file's folder (app/), no matter where uvicorn is
 # started from. This keeps "static" and "templates" resolvable either way.
 BASE_DIR = Path(__file__).resolve().parent
@@ -91,26 +103,26 @@ app.include_router(admin_router)
 # This defines the shape of the JSON the frontend must send us.
 # FastAPI will automatically reject requests that don't match this shape.
 class ChatRequest(BaseModel):
-    query: str
+    query: str = Field(..., max_length=4000)
     conversation_id: int
 
 
 class SearchRequest(BaseModel):
-    query: str
+    query: str = Field(..., max_length=4000)
     top_k: int = 3
 
 
 class ConversationCreateRequest(BaseModel):
-    title: Optional[str] = None
+    title: Optional[str] = Field(None, max_length=200)
 
 
 class ConversationRenameRequest(BaseModel):
-    title: str
+    title: str = Field(..., max_length=200)
 
 
 class MessageCreateRequest(BaseModel):
     role: str
-    content: str
+    content: str = Field(..., max_length=8000)
 
 
 @app.get("/")
@@ -253,33 +265,53 @@ def chat(chat_request: ChatRequest):
     return {"query": query, "answer": answer, "sources": sources}
 
 
+GENERIC_FILE_ERROR = "Could not process this file. It may be unsupported, empty, or corrupted."
+
+
+def _reject_if_oversized(file_bytes: bytes) -> None:
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail=f"File exceeds the {MAX_UPLOAD_MB} MB upload limit.")
+
+
 @app.post("/api/documents/process")
-async def process_document_endpoint(file: UploadFile = File(...)):
+async def process_document_endpoint(
+    file: UploadFile = File(...),
+    admin: str = Depends(require_admin_api),
+):
     # Phase 2 only extracts and cleans text. Nothing here touches
-    # embeddings, FAISS, or an LLM.
+    # embeddings, FAISS, or an LLM. Kept admin-only since it's a
+    # knowledge-base-adjacent operation, per this project's security
+    # requirements for document processing endpoints.
     file_bytes = await file.read()
+    _reject_if_oversized(file_bytes)
 
     try:
         result = process_document(file.filename, file_bytes)
     except UnsupportedFileTypeError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
-        raise HTTPException(status_code=400, detail=f"Could not process file: {error}")
+        print(f"process_document_endpoint error: {error}")
+        raise HTTPException(status_code=400, detail=GENERIC_FILE_ERROR)
 
     return result
 
 
 @app.post("/api/documents/chunk")
-async def chunk_document_endpoint(file: UploadFile = File(...)):
+async def chunk_document_endpoint(
+    file: UploadFile = File(...),
+    admin: str = Depends(require_admin_api),
+):
     # Flow: Upload -> document_processor (extract + clean) -> chunker -> JSON
     file_bytes = await file.read()
+    _reject_if_oversized(file_bytes)
 
     try:
         processed = process_document(file.filename, file_bytes)
     except UnsupportedFileTypeError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
-        raise HTTPException(status_code=400, detail=f"Could not process file: {error}")
+        print(f"chunk_document_endpoint error: {error}")
+        raise HTTPException(status_code=400, detail=GENERIC_FILE_ERROR)
 
     try:
         chunks = chunk_text(processed["text"])
@@ -301,16 +333,21 @@ EMBEDDING_PREVIEW_LENGTH = 5
 
 
 @app.post("/api/documents/embed")
-async def embed_document_endpoint(file: UploadFile = File(...)):
+async def embed_document_endpoint(
+    file: UploadFile = File(...),
+    admin: str = Depends(require_admin_api),
+):
     # Flow: Upload -> document_processor -> chunker -> embedding_service -> JSON
     file_bytes = await file.read()
+    _reject_if_oversized(file_bytes)
 
     try:
         processed = process_document(file.filename, file_bytes)
     except UnsupportedFileTypeError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
-        raise HTTPException(status_code=400, detail=f"Could not process file: {error}")
+        print(f"embed_document_endpoint error: {error}")
+        raise HTTPException(status_code=400, detail=GENERIC_FILE_ERROR)
 
     try:
         chunks = chunk_text(processed["text"])
@@ -351,16 +388,28 @@ INDEX_TYPE_NAME = "IndexFlatIP"
 
 
 @app.post("/api/documents/index")
-async def index_document_endpoint(file: UploadFile = File(...)):
+async def index_document_endpoint(
+    file: UploadFile = File(...),
+    admin: str = Depends(require_admin_api),
+):
     # Flow: Upload -> extract -> clean -> chunk -> embed -> FAISS index
+    #
+    # This replaces the ENTIRE active knowledge base with a single
+    # document — it is a Phase 2-era learning endpoint, not the real
+    # ingestion path (that's /admin/knowledge/upload, which appends
+    # safely and tracks background job status). Because it can wipe the
+    # live index used by the public chatbot, it must never be callable
+    # anonymously.
     file_bytes = await file.read()
+    _reject_if_oversized(file_bytes)
 
     try:
         processed = process_document(file.filename, file_bytes)
     except UnsupportedFileTypeError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
-        raise HTTPException(status_code=400, detail=f"Could not process file: {error}")
+        print(f"index_document_endpoint error: {error}")
+        raise HTTPException(status_code=400, detail=GENERIC_FILE_ERROR)
 
     try:
         chunks = chunk_text(processed["text"])
@@ -391,7 +440,8 @@ async def index_document_endpoint(file: UploadFile = File(...)):
     except (ValueError, DimensionMismatchError) as error:
         raise HTTPException(status_code=400, detail=str(error))
     except OSError as error:
-        raise HTTPException(status_code=500, detail=f"Failed to save knowledge base to disk: {error}")
+        print(f"index_document_endpoint save error: {error}")
+        raise HTTPException(status_code=500, detail="Failed to save the knowledge base.")
 
     return {
         "filename": processed["filename"],
@@ -411,6 +461,8 @@ def search_endpoint(search_request: SearchRequest):
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
     if search_request.top_k < 1:
         raise HTTPException(status_code=400, detail="top_k must be at least 1.")
+    if search_request.top_k > 20:
+        raise HTTPException(status_code=400, detail="top_k must be at most 20.")
 
     try:
         context_result = _retrieve_context(search_request.query, top_k=search_request.top_k)
